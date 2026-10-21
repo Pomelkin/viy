@@ -1,0 +1,125 @@
+[project]
+name = "viy"
+version = "0.1.0"
+description = "Datasets, augmentations and an MTEB-style benchmark for AI-generated image detection"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "albumentations>=2.0.8",
+    "huggingface-hub>=0.30",
+    "kostyl-toolkit[ml]>=0.2.8",
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "pillow>=11.0",
+    "pydantic>=2.12",
+    "scikit-learn>=1.5",
+    "torch>=2.5",
+]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.ruff.lint]
+exclude = [
+  ".venv",
+  "build",
+  "dist",
+  "__pycache__",
+  "migrations",
+  "notebooks",
+  "tests",
+  "./train_val_scripts/form_understanding",
+]
+
+select = [
+  "ALL",
+]
+
+ignore = [
+  "ANN002", # Missing type annotation for *args
+  "ANN003", # Missing type annotation for **kwargs
+  "ANN401", # Dynamically typed expressions (typing.Any) are disallowed
+  "I001",   # isort found an import in the wrong position
+  "D100",   # Missing docstring in public module
+  "D104",   # Missing docstring in public package
+  "D203",   # 1 blank line required before class docstring
+  "D212",   # Multi-line docstring summary should start at the first line
+  "D401",   # First line of docstring should be in imperative mood
+  "E501",   # Line too long
+  "N806",   # Variable in function should be lowercase
+  "N803",   # Argument name should be lowercase
+  "N812",   # Import alias should be lowercase
+  "D105",  # Missing docstring in magic method
+  "N817",   # CamelCase import aliased as acronym
+  "S311",  # Standard pseudo-random generators are not suitable for security/cryptographic purposes
+  "PIE790", # Unnecessary placeholder
+  "W293",  # Blank line contains whitespace
+  "T201",  # print found
+  "CPY001", # missing copyright
+  "PLR1711", # useless return statements
+  "EM102", # f-strings in exception constructors
+  "EM101", # strings in exception constructors
+  "TRY003", # Long messages in vanilla exception REMOVE IN NEW PROJECT!!!
+  "RET504", # useless return statements
+  "PLR2004",
+  "ERA001",
+  "PLR0913",
+  "PLR0917",
+  "FBT001",
+  "FBT002",
+  "G004",
+  "COM812",
+  "RET502",
+  "TC006",
+  "TC001",
+  "TC002",
+  "TC003",
+  "RET508",
+]
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = [
+  "src",
+  "app",
+  "core",
+  "viy",
+]
+combine-as-imports = false
+force-single-line = true
+lines-after-imports = 2
+section-order = [
+  "future",
+  "standard-library",
+  "third-party",
+  "first-party",
+  "local-folder",
+]
+
+[tool.ty.environment]
+python = ".venv"
+python-version = "3.13"
+
+[tool.ty.rules]
+blanket-ignore-comment = "error"
+missing-type-argument = "error"
+missing-override-decorator = "error"
+possibly-unresolved-reference = "warn"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+    "ty>=0.0.90",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
