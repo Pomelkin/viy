@@ -1,7 +1,7 @@
 [project]
 name = "viy"
 version = "0.1.0"
-description = "Datasets, augmentations and an MTEB-style benchmark for AI-generated image detection"
+description = "Datasets, robust augmentations and a benchmark for AI-generated image detection"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -32,7 +32,6 @@ exclude = [
   "migrations",
   "notebooks",
   "tests",
-  "./train_val_scripts/form_understanding",
 ]
 
 select = [
