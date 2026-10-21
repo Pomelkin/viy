@@ -81,11 +81,10 @@ The NTIRE evaluation splits are already distorted by the organizers, and the ben
 ```python
 from pathlib import Path
 from viy.bench import Benchmark, get_tasks, results_table
-from viy.datasets import DatasetSourceConfig, StorageConfig
+from viy.datasets import DatasetSourceConfig
 
 benchmark = Benchmark(
     tasks=get_tasks(["ntire", "mllm_generated"]),
-    storage=StorageConfig(root=Path("/data/viy")),
     output_dir=Path("results"),
     sources=[DatasetSourceConfig(name="ntire", raw_path=Path("/datasets/NTIRE"))],   # optional local copy
     batch_size=64,
@@ -95,12 +94,10 @@ benchmark = Benchmark(
 results = benchmark.run(MyDetector("epoch_05.pt"))
 ```
 
-Datasets not listed in `sources` are downloaded from the Hub on first use. The same run from a config:
+Datasets not listed in `sources` are downloaded from the Hub on first use. Prepared data goes to `~/.cache/viy` or `$VIY_ROOT`; pass `storage=StorageConfig(root=...)` to put it elsewhere. The same run from a config:
 
 ```yaml
 # bench.yaml
-storage:
-  root: /data/viy
 output_dir: results
 tasks: [ntire, mllm_generated]
 sources:

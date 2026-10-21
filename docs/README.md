@@ -16,6 +16,6 @@ The modules map onto these pages:
 viy.layout     canonical on-disk format, split CSV, sanity checks          -> datasets.md
 viy.datasets   supported datasets, Hub download, preparation              -> datasets.md
 viy.augs       operations, steps, NTIRE presets                            -> augmentations.md
-viy.data       preprocessing, torch datasets, TrainValDatasets             -> training.md
+viy.data       Preprocessor, DetectionDataset, check_disjoint             -> training.md
 viy.bench      DetectorModel, tasks, metrics, Benchmark runner             -> benchmark.md
 ```

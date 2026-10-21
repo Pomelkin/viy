@@ -20,29 +20,33 @@ Requires Python 3.13 or newer.
 Training data:
 
 ```python
+import albumentations as A
 from torch.utils.data import DataLoader
-from viy.data import TrainDataConfig, TrainValDatasets
+from viy.augs import AugmentationPipeline, NTIREPresetStep
+from viy.data import DatasetSpec, DetectionDataset, Preprocessor
 
-config = TrainDataConfig.model_validate({
-    "storage": {"root": "/data/viy"},
-    "datasets": [{"name": "ntire", "train_splits": ["shard_0"]}],   # downloaded from the Hub on first use
-    "preprocessing": {"image_size": 256},
-    "train_augmentation": {"steps": [{"kind": "ntire_preset", "preset": "val"}]},
-})
-data = TrainValDatasets.from_pydantic_model(config)
-train_loader = DataLoader(data.train, batch_size=64, shuffle=True, num_workers=8)
+train = DetectionDataset(
+    [DatasetSpec("ntire", splits=["shard_0"])],     # downloaded from the Hub on first use
+    stage="train",
+    preprocessor=Preprocessor(image_size=256),
+    augmentation=AugmentationPipeline([A.HorizontalFlip(p=0.5), NTIREPresetStep("val")]),
+)
+val = DetectionDataset([DatasetSpec("ntire")], stage="val", preprocessor=Preprocessor(image_size=256))
+
+train_loader = DataLoader(train, batch_size=64, shuffle=True, num_workers=8)
+val_loaders = {name: DataLoader(part, batch_size=64) for name, part in val.by_source().items()}
 ```
+
+Every class also has `from_pydantic_model`, so the same setup can come from a YAML config.
 
 Benchmark:
 
 ```python
 from pathlib import Path
 from viy.bench import Benchmark, get_tasks, results_table
-from viy.datasets import StorageConfig
 
 benchmark = Benchmark(
     tasks=get_tasks(["ntire/val", "ntire/val_hard"]),
-    storage=StorageConfig(root=Path("/data/viy")),
     output_dir=Path("results"),
 )
 print(results_table(benchmark.run(MyDetector())))   # MyDetector implements viy.bench.DetectorModel
@@ -54,7 +58,7 @@ print(results_table(benchmark.run(MyDetector())))   # MyDetector implements viy.
 |---|---|
 | [Getting started](docs/getting-started.md) | Install, storage, the first training loader and the first benchmark run |
 | [Datasets](docs/datasets.md) | Canonical layout, supported datasets, custom splits, sanity checks |
-| [Training data](docs/training.md) | `TrainDataConfig`, samples, validation rules, preprocessing, DDP and Lightning |
+| [Training data](docs/training.md) | `DetectionDataset`, stages, configs, preprocessing, DDP and Lightning |
 | [Augmentations](docs/augmentations.md) | Steps, NTIRE presets, operations reference, proxies |
 | [Benchmark](docs/benchmark.md) | `DetectorModel`, tasks, results, metrics and slices |
 | [Extending](docs/extending.md) | New datasets, operations and tasks |
@@ -62,10 +66,10 @@ print(results_table(benchmark.run(MyDetector())))   # MyDetector implements viy.
 
 ## Supported datasets
 
-| Name | Splits |
+| Name | Dataset |
 |---|---|
-| `ntire` | NTIRE 2026 Robust AI-Generated Image Detection: training shards, `val`, `val_hard`, `test_public`; unpublished `shard_6` and `test_private` from a local copy |
-| `mllm_generated` | MLLM-Generated Image Detection: GPT Image 2, Nano Banana 2, FLUX.2, Qwen Image 2.1 |
+| `ntire` | NTIRE 2026 Robust AI-Generated Image Detection |
+| `mllm_generated` | MLLM-Generated Image Detection |
 
 ## Development
 

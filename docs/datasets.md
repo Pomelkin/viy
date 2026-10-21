@@ -43,7 +43,9 @@ SampleRecord(
 )
 ```
 
-## Storage settings
+## Storage
+
+Prepared datasets live under one directory, the storage root. By default it is `~/.cache/viy`; set the `VIY_ROOT` environment variable to move it. Everything that prepares or reads datasets also accepts a `StorageConfig`:
 
 ```python
 from pathlib import Path
@@ -51,21 +53,14 @@ from viy.datasets import StorageConfig
 from viy.layout import FileCheck, LinkMode
 
 StorageConfig(
-    root=Path("/data/viy"),      # where canonical datasets live
+    root=Path("/data/viy"),      # default: $VIY_ROOT or ~/.cache/viy
     auto_prepare=True,           # prepare missing splits on first access
     link_mode=None,              # None: symlink on POSIX, copy elsewhere; or LinkMode.HARDLINK / COPY
     file_check=FileCheck.ALL,    # check every image on load; SAMPLE checks 1000, NONE skips
 )
 ```
 
-A dataset is selected by a `DatasetSourceConfig`:
-
-```python
-from viy.datasets import DatasetSourceConfig
-
-DatasetSourceConfig(name="ntire")                                    # download from the Hub
-DatasetSourceConfig(name="ntire", raw_path=Path("/datasets/NTIRE"))   # use a local copy
-```
+Each dataset is downloaded from the Hugging Face Hub unless a local copy of its raw files is given as `raw_path`, e.g. `DatasetSpec("ntire", raw_path="/datasets/NTIRE")` or `NTIRE(raw_path="/datasets/NTIRE")`.
 
 ## Supported datasets
 
@@ -119,10 +114,9 @@ The dataset has no validation split, so:
 ## Working with a dataset directly
 
 ```python
-from pathlib import Path
 from viy.datasets import NTIRE
 
-ntire = NTIRE(Path("/data/viy"))           # or NTIRE(root, raw_path=Path("/datasets/NTIRE"))
+ntire = NTIRE()                          # or NTIRE(raw_path="/datasets/NTIRE"), NTIRE(storage=...)
 ntire.expand_splits(["train"])           # ['shard_0', ..., 'shard_5']
 records = ntire.load("val")              # prepares the split if needed and runs sanity checks
 path = ntire.layout.image_path(records[0])
@@ -137,12 +131,11 @@ ntire.layout.read_manifest().splits      # provenance: sizes, source, preparatio
 A split exists if and only if its CSV exists, so a custom split is just a CSV over images that are already linked. For example, to hold out part of `shard_5` for validation:
 
 ```python
-from pathlib import Path
 from viy.data import subsample
 from viy.datasets import NTIRE
 from viy.layout import write_records
 
-ntire = NTIRE(Path("/data/viy"))
+ntire = NTIRE()
 records = ntire.load("shard_5")
 held_out = subsample(records, 2000, seed=0)            # class-stratified
 held_out_images = {record.image for record in held_out}
@@ -154,14 +147,16 @@ write_records(
 )
 ```
 
-```yaml
-datasets:
-  - name: ntire
-    train_splits: [shard_0, shard_1, shard_2, shard_3, shard_4, shard_5_train]
-    val_splits: [shard_5_val, val]
+```python
+from viy.data import DatasetSpec, DetectionDataset, Preprocessor, check_disjoint
+
+shards = ["shard_0", "shard_1", "shard_2", "shard_3", "shard_4", "shard_5_train"]
+train = DetectionDataset([DatasetSpec("ntire", splits=shards)], stage="train", preprocessor=Preprocessor(256))
+val = DetectionDataset([DatasetSpec("ntire", splits=["shard_5_val", "val"])], stage="val", preprocessor=Preprocessor(256))
+check_disjoint(train, val)
 ```
 
-A hand-written CSV only needs the `image` and `label` columns. Do not use the `train` group together with `shard_5_val`: the group contains `shard_5`, and the overlap check will refuse to build the datasets.
+A hand-written CSV only needs the `image` and `label` columns. Do not combine the `train` group with `shard_5_val`: the group contains `shard_5`, and `check_disjoint` will report the overlap.
 
 ## Sanity checks
 
@@ -175,7 +170,7 @@ These run every time a split is loaded:
 | a single class in the split | warning |
 | file formats differ between classes | warning about the "JPEG real vs PNG fake" shortcut |
 
-When training datasets are built, images used in both training and validation are an error. The check compares resolved file paths, so it also catches the same raw file reached through two splits or two datasets.
+`check_disjoint(train, val)` raises when an image is used for both training and validation. It compares resolved file paths, so it also catches the same raw file reached through two splits or two datasets.
 
 ## Preparation and concurrency
 

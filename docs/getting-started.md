@@ -10,44 +10,41 @@ git clone <repo-url> && cd viy && uv sync
 
 Requires Python 3.13 or newer.
 
-## Pick a storage root
+## Where the data goes
 
-Every dataset is converted into a canonical layout under one directory, the storage **root**. Nothing is copied when the raw data is already on disk: images are symlinked.
-
-```python
-from pathlib import Path
-from viy.datasets import StorageConfig
-
-storage = StorageConfig(root=Path("/data/viy"))
-```
+Every dataset is converted once into a canonical layout and reused afterwards. By default the layout lives in `~/.cache/viy`. To move it, set the `VIY_ROOT` environment variable or pass `storage=StorageConfig(root=...)`. Nothing is copied when the raw data is already on disk: images are symlinked.
 
 A dataset can come from one of two places:
 
 - **Hugging Face Hub**, the default. On first access the needed files are downloaded into `<root>/<dataset>/raw`, archives are unpacked and the images are linked.
 - **A local raw copy.** Set `raw_path` to a directory that already holds the raw files to skip the download. [Datasets](datasets.md) describes the expected layout of each dataset.
 
-## Training data in five lines
+## Training data
 
 ```python
+import albumentations as A
 from torch.utils.data import DataLoader
-from viy.data import TrainDataConfig, TrainValDatasets
 
-config = TrainDataConfig.model_validate({
-    "storage": {"root": "/data/viy"},
-    "datasets": [{"name": "ntire", "train_splits": ["shard_0"]}],
-    "preprocessing": {"image_size": 256},
-    "train_augmentation": {"steps": [{"kind": "ntire_preset", "preset": "val"}]},
-})
-data = TrainValDatasets.from_pydantic_model(config)
+from viy.augs import AugmentationPipeline, NTIREPresetStep
+from viy.data import DatasetSpec, DetectionDataset, Preprocessor
 
-train_loader = DataLoader(data.train, batch_size=64, shuffle=True, num_workers=8)
+train = DetectionDataset(
+    [DatasetSpec("ntire", splits=["shard_0"])],
+    stage="train",
+    preprocessor=Preprocessor(image_size=256),
+    augmentation=AugmentationPipeline([A.HorizontalFlip(p=0.5), NTIREPresetStep("val")]),
+)
+val = DetectionDataset([DatasetSpec("ntire")], stage="val", preprocessor=Preprocessor(image_size=256))
+
+train_loader = DataLoader(train, batch_size=64, shuffle=True, num_workers=8)
+val_loaders = {name: DataLoader(part, batch_size=64) for name, part in val.by_source().items()}
 batch = next(iter(train_loader))
 batch["image"].shape   # torch.Size([64, 3, 256, 256])
 batch["label"]         # 0 real, 1 fake
 batch["source"]        # ["ntire/shard_2", ...]
 ```
 
-The first call downloads one training shard (about 20 GB) and both validation splits (about 4 GB) from the Hugging Face Hub, unpacks them and links the images. Later calls only read the split CSV files and check that the images exist. Drop `train_splits` to train on all six shards.
+The first call downloads one training shard (about 20 GB) and both validation splits (about 4 GB) from the Hugging Face Hub, unpacks them and links the images. Later calls only read the split CSV files and check that the images exist. Drop `splits` to train on all six shards.
 
 ## A benchmark run
 
@@ -60,7 +57,6 @@ from PIL import Image
 
 from viy.bench import Benchmark, DetectorModel, ModelMeta, get_tasks, results_table
 from viy.data import Preprocessor
-from viy.datasets import StorageConfig
 
 
 class MyDetector(DetectorModel):
@@ -84,7 +80,6 @@ class MyDetector(DetectorModel):
 
 benchmark = Benchmark(
     tasks=get_tasks(["ntire/val", "ntire/val_hard", "ntire/test_public"]),
-    storage=StorageConfig(root=Path("/data/viy")),
     output_dir=Path("results"),
 )
 results = benchmark.run(MyDetector())

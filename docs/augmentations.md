@@ -6,9 +6,33 @@ Augmentations operate on decoded `uint8` RGB arrays of shape `(H, W, 3)`, before
 
 The same seed therefore reproduces both the image and its trace.
 
-## Steps
+## Building a pipeline
 
-`AugmentationConfig` holds `steps`. Each step is selected by `kind`.
+In Python, pass steps to `AugmentationPipeline`. Albumentations transforms and composes are accepted as they are:
+
+```python
+import albumentations as A
+from viy.augs import AugmentationPipeline, NTIREPresetStep, OpStep
+
+pipeline = AugmentationPipeline([
+    A.HorizontalFlip(p=0.5),
+    A.OneOf([A.Blur(), A.GaussNoise()], p=0.3),
+    OpStep("jpeg", p=0.5, levels=[30, 50, 70]),
+    NTIREPresetStep("aggressive", exclude_ops=["watermark_proxy"]),
+])
+```
+
+The same pipeline from a config is `AugmentationPipeline.from_pydantic_model(AugmentationConfig)`. In a config every step is selected by `kind`:
+
+| `kind` | Python object | Does |
+|---|---|---|
+| `op` | `OpStep("jpeg", p=..., levels=...)` | one operation |
+| `chain` | `ChainStep(groups, lengths)` | grouped random chain |
+| `sequence` | `SequenceStep(steps, p=...)` | nested steps, all or nothing |
+| `albumentations` | any albumentations transform or compose | an albumentations transform |
+| `ntire_preset` | `NTIREPresetStep("aggressive", ...)` | a reconstructed NTIRE mix |
+
+## Steps
 
 ### `op`: one operation
 
@@ -51,7 +75,9 @@ The step draws the chain length `k` from `lengths`, then `k` distinct groups by 
   params: {size: [320, 320], scale: [0.78, 1.0], ratio: [0.82, 1.22]}
 ```
 
-`transform` is a class name from `albumentations`, and `params` are its keyword arguments. Set the probability with the step `p`, not inside `params`. The transform is reseeded from the pipeline generator on every call, so it is as reproducible as the native operations. It appears in the trace as `albumentations.<Name>` without a level. The transform must return a `uint8` image; normalization belongs to [preprocessing](training.md#preprocessing).
+In a config, `transform` is a class name from `albumentations` and `params` are its keyword arguments; set the probability with the step `p`, not inside `params`. Any transform class is picked up by name, with no registration. In Python, pass the transform object itself, with its own `p`.
+
+Either way the transform is reseeded from the pipeline generator on every call, so it is as reproducible as the native operations. Every transform that actually fires, including those inside `OneOf` or `Compose`, appears in the trace as `albumentations.<Name>` without a level. Transforms must return `uint8` images; normalization belongs to [preprocessing](training.md#preprocessing).
 
 ### `ntire_preset`: a reconstructed NTIRE mix
 
@@ -166,19 +192,16 @@ WARNING [base.py] Augmentation 'cheng2020_proxy' is a proxy of the Cheng2020 lea
 
 `op.is_proxy` and the `_proxy` name suffix identify proxies programmatically. Genuine JPEG AI and WMForger examples exist as the `ntire/shard_6` split. Genuine versions of the others are planned as offline-generated splits.
 
-## Python API
+## Running a pipeline
 
 ```python
 import numpy as np
 from PIL import Image
-from viy.augs import AugmentationConfig, AugmentationPipeline, build_op, trace_to_json
-
-config = AugmentationConfig.model_validate({"steps": [{"kind": "ntire_preset", "preset": "val"}]})
-pipeline = AugmentationPipeline.from_pydantic_model(config)
+from viy.augs import build_op, trace_to_json
 
 image = np.asarray(Image.open("photo.jpg").convert("RGB"))
 augmented, trace = pipeline(image, np.random.default_rng(0))
-print(trace_to_json(trace))      # e.g. [{"name": "lensblur", "scale": 4}, {"name": "downscale", "scale": 0.53}]
+print(trace_to_json(trace))      # e.g. [{"name": "albumentations.HorizontalFlip", "scale": null}, {"name": "jpeg", "scale": 50}]
 
 jpeg = build_op("jpeg", levels=[50])
 compressed, applied = jpeg(image, np.random.default_rng(0))   # applied == AppliedOp("jpeg", 50)
