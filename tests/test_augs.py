@@ -1,16 +1,20 @@
 from collections import Counter
 from typing import override
 
+import albumentations as A
 import numpy as np
 import pytest
 from pydantic import ValidationError
 
 from viy.augs import OPS
+from viy.augs import AlbumentationsStep
 from viy.augs import AugmentationConfig
 from viy.augs import AugmentationPipeline
 from viy.augs import NTIREPreset
 from viy.augs import ChainStepConfig
 from viy.augs import ImageOp
+from viy.augs import NTIREPresetStep
+from viy.augs import OpStep
 from viy.augs import OpStepConfig
 from viy.augs import build_op
 from viy.augs import build_step
@@ -237,3 +241,50 @@ def test_invalid_configs() -> None:
                 }
             ).steps[0]
         )
+
+
+def test_python_api_steps() -> None:
+    image = _image()
+    pipeline = AugmentationPipeline(
+        [
+            A.HorizontalFlip(p=1.0),
+            A.Compose([A.OneOf([A.Blur(p=1.0), A.GaussNoise(p=1.0)], p=1.0)]),
+            OpStep("jpeg", levels=[50]),
+            NTIREPresetStep("val", distort_probability=0.0),
+        ]
+    )
+    augmented, trace = pipeline(image, np.random.default_rng(0))
+    names = [applied.name for applied in trace]
+    assert names[0] == "albumentations.HorizontalFlip"
+    assert names[1] in {"albumentations.Blur", "albumentations.GaussNoise"}
+    assert names[2:] == ["jpeg"]
+    assert trace[2].scale == 50
+    again, again_trace = pipeline(image, np.random.default_rng(0))
+    np.testing.assert_array_equal(augmented, again)
+    assert trace == again_trace
+
+
+def test_albumentations_trace_follows_inner_probability() -> None:
+    pipeline = AugmentationPipeline([A.HorizontalFlip(p=0.5)])
+    applied = [
+        bool(pipeline(_image(), np.random.default_rng(seed))[1]) for seed in range(200)
+    ]
+    assert 60 < sum(applied) < 140
+
+
+def test_preset_step_matches_config() -> None:
+    from_object = AugmentationPipeline([NTIREPresetStep("aggressive")])
+    from_config = AugmentationPipeline.from_pydantic_model(
+        AugmentationConfig.model_validate(
+            {"steps": [{"kind": "ntire_preset", "preset": "aggressive"}]}
+        )
+    )
+    for seed in range(5):
+        first = from_object(_image(seed=seed), np.random.default_rng(seed))
+        second = from_config(_image(seed=seed), np.random.default_rng(seed))
+        np.testing.assert_array_equal(first[0], second[0])
+        assert first[1] == second[1]
+    with pytest.raises(ValueError, match="levels"):
+        OpStep(build_op("jpeg"), levels=[50])
+    with pytest.raises(ValueError, match="params"):
+        AlbumentationsStep(A.HorizontalFlip(), params={"p": 1.0})

@@ -10,12 +10,15 @@ import albumentations as A
 import numpy as np
 
 from viy.common import ImageArray
+from viy.common import ScaleValue
 
+from .base import OPS
 from .base import AppliedOp
 from .base import ImageOp
 
 
 type StepOutput = tuple[ImageArray, list[AppliedOp]]
+type AlbumentationsTransform = A.BasicTransform | A.BaseCompose
 
 
 def _check_probability(p: float) -> None:
@@ -45,15 +48,28 @@ class Step(ABC):
 class OpStep(Step):
     """Apply one image operation with probability ``p``."""
 
-    def __init__(self, op: ImageOp, p: float = 1.0) -> None:
+    def __init__(
+        self,
+        op: ImageOp | str,
+        p: float = 1.0,
+        levels: Sequence[ScaleValue] | None = None,
+    ) -> None:
         """
         Initialize the step.
 
         Args:
-            op (ImageOp): Operation to apply.
+            op (ImageOp | str): Operation, or the registered name of one, e.g. ``jpeg``.
             p (float): Probability of applying it.
+            levels (Sequence[ScaleValue] | None): Severity levels when ``op`` is a
+                name; ``None`` uses the operation defaults.
         """
         _check_probability(p)
+        if isinstance(op, str):
+            op = OPS.get(op)(levels)
+        elif levels is not None:
+            raise ValueError(
+                "Pass levels to the operation itself when it is not given by name."
+            )
         self.op = op
         self.p = p
         return
@@ -157,36 +173,38 @@ class AlbumentationsStep(Step):
     """
     Apply an albumentations transform with probability ``p``.
 
-    The transform is reseeded from the pipeline generator on every call, so it
-    is as reproducible as the native operations. It must return ``uint8``
-    images; normalization belongs to preprocessing.
+    The transform is given either as a ready object, such as
+    ``A.HorizontalFlip(p=0.5)`` or an ``A.Compose``, or by class name with
+    keyword ``params``. It is reseeded from the pipeline generator on every
+    call, so it is as reproducible as the native operations, and every
+    transform it actually applies is recorded in the trace. It must return
+    ``uint8`` images; normalization belongs to preprocessing.
     """
 
     def __init__(
-        self, transform: str, params: Mapping[str, Any] | None = None, p: float = 1.0
+        self,
+        transform: AlbumentationsTransform | str,
+        params: Mapping[str, Any] | None = None,
+        p: float = 1.0,
     ) -> None:
         """
         Initialize the step.
 
         Args:
-            transform (str): Name of an ``albumentations`` transform class, e.g. ``HorizontalFlip``.
-            params (Mapping[str, Any] | None): Keyword arguments of the transform except ``p``.
-            p (float): Probability of applying the transform.
+            transform (AlbumentationsTransform | str): Albumentations transform or
+                compose, or the name of a transform class, e.g. ``HorizontalFlip``.
+            params (Mapping[str, Any] | None): Keyword arguments of a transform
+                given by name, except ``p``.
+            p (float): Probability of applying the step.
         """
         _check_probability(p)
-        params = dict(params or {})
-        if "p" in params:
-            raise ValueError(
-                "Set the probability of an albumentations step with the step 'p'."
-            )
-        transform_cls = getattr(A, transform, None)
-        if not isinstance(transform_cls, type) or not issubclass(
-            transform_cls, A.BasicTransform
-        ):
-            raise TypeError(f"'{transform}' is not an albumentations transform.")
-        self.name = f"albumentations.{transform}"
+        if isinstance(transform, str):
+            transform = _transform_by_name(transform, dict(params or {}))
+        elif params:
+            raise ValueError("Pass params only together with a transform name.")
+        self.name = f"albumentations.{type(transform).__name__}"
         self.p = p
-        self._compose = A.Compose([transform_cls(**params, p=1.0)])
+        self._compose = A.Compose([transform], save_applied_params=True)
         return
 
     @override
@@ -194,10 +212,28 @@ class AlbumentationsStep(Step):
         if rng.random() >= self.p:
             return image, []
         self._compose.set_random_seed(int(rng.integers(2**32)))
-        output = self._compose(image=image)["image"]
-        if not isinstance(output, np.ndarray) or output.dtype != np.uint8:
+        output = self._compose(image=image)
+        augmented = output["image"]
+        if not isinstance(augmented, np.ndarray) or augmented.dtype != np.uint8:
             raise TypeError(f"{self.name} must return a uint8 image.")
-        return np.ascontiguousarray(output), [AppliedOp(self.name)]
+        trace = [
+            AppliedOp(f"albumentations.{name}")
+            for name, _ in output["applied_transforms"]
+        ]
+        return np.ascontiguousarray(augmented), trace
+
+
+def _transform_by_name(name: str, params: dict[str, Any]) -> A.BasicTransform:
+    if "p" in params:
+        raise ValueError(
+            "Set the probability of an albumentations step with the step 'p'."
+        )
+    transform_cls = getattr(A, name, None)
+    if not isinstance(transform_cls, type) or not issubclass(
+        transform_cls, A.BasicTransform
+    ):
+        raise TypeError(f"'{name}' is not an albumentations transform.")
+    return transform_cls(**params, p=1.0)
 
 
 def _normalize(

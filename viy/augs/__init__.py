@@ -14,11 +14,13 @@ from .configs import OpStepConfig
 from .configs import SequenceStepConfig
 from .configs import StepConfig
 from .pipeline import AugmentationPipeline
+from .pipeline import NTIREPresetStep
 from .pipeline import build_op
 from .pipeline import build_step
 from .presets import ntire_preset
 from .presets import preset_operations
 from .steps import AlbumentationsStep
+from .steps import AlbumentationsTransform
 from .steps import ChainGroup
 from .steps import ChainStep
 from .steps import OpStep
@@ -30,6 +32,7 @@ __all__ = [
     "OPS",
     "AlbumentationsStep",
     "AlbumentationsStepConfig",
+    "AlbumentationsTransform",
     "AppliedOp",
     "AugmentationConfig",
     "AugmentationPipeline",
@@ -39,6 +42,7 @@ __all__ = [
     "ChainStepConfig",
     "ImageOp",
     "NTIREPreset",
+    "NTIREPresetStep",
     "NTIREPresetStepConfig",
     "OpStep",
     "OpStepConfig",
