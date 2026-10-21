@@ -1,0 +1,75 @@
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: check-symlinks
+  - id: destroyed-symlinks
+  - id: trailing-whitespace
+  - id: end-of-file-fixer
+  - id: check-yaml
+  - id: check-toml
+  - id: check-ast
+  - id: check-added-large-files
+  - id: check-merge-conflict
+  - id: check-executables-have-shebangs
+  - id: check-shebang-scripts-are-executable
+  - id: detect-private-key
+  - id: debug-statements
+
+- repo: https://github.com/asottile/pyupgrade
+  rev: v3.21.2
+  hooks:
+  - id: pyupgrade
+    args: [ --py312-plus ]
+
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.15.14
+  hooks:
+  - id: ruff-format
+    name: ruff format
+    types_or:
+    - python
+    - pyi
+  - id: ruff
+    name: ruff lint
+    types_or: [ python, pyi ]
+    args: [ "--fix" ]
+
+  - id: ruff
+    name: ruff isort
+    types_or: [ python, pyi, jupyter ]
+    args: [ "check", "--select", "I", "--fix" ]
+
+- repo: https://github.com/codespell-project/codespell
+  rev: v2.4.2
+  hooks:
+  - id: codespell
+
+- repo: https://github.com/astral-sh/uv-pre-commit
+  rev: 0.11.16
+  hooks:
+  - id: uv-lock
+  - id: uv-export
+
+- repo: https://github.com/hadolint/hadolint
+  rev: v2.14.0
+  hooks:
+  - id: hadolint-docker
+    types_or: [ dockerfile ]
+
+- repo: https://github.com/allganize/ty-pre-commit
+  # Ty version.
+  rev: v0.0.38
+  hooks:
+  # Run the type checker.
+  - id: ty-check
+    types_or: [ python, pyi ]
+
+- repo: https://github.com/docker-compose-linter/pre-commit-dclint
+  rev: v3.1.0 # Matches the dclint version, use the sha or tag you want to point at
+  hooks:
+  - id: dclint
+    # Optional: regex override for compose files
+    files: ^(docker-)?compose\.ya?ml$
+    # Optional: enable autofix on commit
+    args: [ --fix ]
