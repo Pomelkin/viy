@@ -103,6 +103,9 @@ section-order = [
   "local-folder",
 ]
 
+[tool.codespell]
+ignore-words-list = "fpr"
+
 [tool.ty.environment]
 python = ".venv"
 python-version = "3.13"
