@@ -17,13 +17,13 @@ repos:
   - id: debug-statements
 
 - repo: https://github.com/asottile/pyupgrade
-  rev: v3.21.2
+  rev: v3.22.0
   hooks:
   - id: pyupgrade
     args: [ --py312-plus ]
 
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.14
+  rev: v0.17.1
   hooks:
   - id: ruff-format
     name: ruff format
@@ -41,25 +41,25 @@ repos:
     args: [ "check", "--select", "I", "--fix" ]
 
 - repo: https://github.com/codespell-project/codespell
-  rev: v2.4.2
+  rev: v2.4.3
   hooks:
   - id: codespell
 
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.11.16
+  rev: 0.13.4
   hooks:
   - id: uv-lock
   - id: uv-export
 
 - repo: https://github.com/hadolint/hadolint
-  rev: v2.14.0
+  rev: v2.15.1
   hooks:
   - id: hadolint-docker
     types_or: [ dockerfile ]
 
 - repo: https://github.com/allganize/ty-pre-commit
   # Ty version.
-  rev: v0.0.38
+  rev: v0.0.90
   hooks:
   # Run the type checker.
   - id: ty-check
