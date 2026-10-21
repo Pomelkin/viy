@@ -1,3 +1,4 @@
+import os
 import re
 from collections.abc import Sequence
 from datetime import UTC
@@ -15,7 +16,13 @@ from .records import write_records
 
 
 LAYOUT_VERSION: Final = 1
+ROOT_ENV_VAR: Final = "VIY_ROOT"
 _SPLIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+
+
+def default_root() -> Path:
+    """Directory of canonical datasets: ``$VIY_ROOT`` if set, ``~/.cache/viy`` otherwise."""
+    return Path(os.environ.get(ROOT_ENV_VAR, Path.home() / ".cache" / "viy"))
 
 
 class SplitEntry(StrictPydanticBaseModel):

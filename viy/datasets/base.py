@@ -14,9 +14,7 @@ from typing import ClassVar
 from kostyl.utils import setup_logger
 
 from viy.layout import DatasetLayout
-from viy.layout import FileCheck
 from viy.layout import LayoutError
-from viy.layout import LinkMode
 from viy.layout import SampleRecord
 from viy.layout import check_split
 from viy.layout import default_link_mode
@@ -104,30 +102,27 @@ class DatasetBuilder(ABC):
         return
 
     def __init__(
-        self,
-        root: Path,
-        raw_path: Path | None = None,
-        auto_prepare: bool = True,
-        link_mode: LinkMode | None = None,
-        file_check: FileCheck = FileCheck.ALL,
+        self, raw_path: Path | str | None = None, storage: StorageConfig | None = None
     ) -> None:
         """
         Initialize the builder.
 
         Args:
-            root (Path): Directory holding all canonical datasets.
-            raw_path (Path | None): Local copy of the raw dataset. ``None`` downloads
-                raw files from the Hub into ``<root>/<name>/raw``.
-            auto_prepare (bool): Prepare missing splits on first access.
-            link_mode (LinkMode | None): How raw images are materialized; ``None``
-                picks the platform default.
-            file_check (FileCheck): How many image files are checked when a split is loaded.
+            raw_path (Path | str | None): Local copy of the raw dataset. ``None``
+                downloads raw files from the Hub into ``<root>/<name>/raw``.
+            storage (StorageConfig | None): Canonical layout location and preparation
+                settings; ``None`` uses the defaults.
         """
-        self.layout = DatasetLayout(root, self.name)
+        self.storage = StorageConfig() if storage is None else storage
+        self.layout = DatasetLayout(self.storage.root, self.name)
         self.raw_path = None if raw_path is None else Path(raw_path)
-        self.auto_prepare = auto_prepare
-        self.link_mode = default_link_mode() if link_mode is None else link_mode
-        self.file_check = file_check
+        self.auto_prepare = self.storage.auto_prepare
+        self.link_mode = (
+            default_link_mode()
+            if self.storage.link_mode is None
+            else self.storage.link_mode
+        )
+        self.file_check = self.storage.file_check
         return
 
     @classmethod
@@ -147,13 +142,7 @@ class DatasetBuilder(ABC):
         builder_cls = DATASETS.get(source.name)
         if not issubclass(builder_cls, cls):
             raise TypeError(f"Dataset '{source.name}' is not a {cls.__name__}.")
-        return builder_cls(
-            root=storage.root,
-            raw_path=source.raw_path,
-            auto_prepare=storage.auto_prepare,
-            link_mode=storage.link_mode,
-            file_check=storage.file_check,
-        )
+        return builder_cls(raw_path=source.raw_path, storage=storage)
 
     @classmethod
     def split_spec(cls, split: str) -> SplitSpec | None:

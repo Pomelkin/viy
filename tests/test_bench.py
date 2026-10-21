@@ -66,7 +66,7 @@ def test_binary_metrics() -> None:
 
 
 def test_slices(ntire_raw: Path, storage: StorageConfig) -> None:
-    builder = NTIRE(storage.root, raw_path=ntire_raw)
+    builder = NTIRE(raw_path=ntire_raw, storage=storage)
     names = [item.name for item in build_slices(builder.load("test_private"))]
     assert names[:3] == ["all", "clean", "distorted"]
     assert "distortion:watermark@pixelseal" in names

@@ -63,31 +63,34 @@ def test_ntire_prepares_every_split(ntire_raw: Path, storage: StorageConfig) -> 
 
 
 def test_prepared_split_is_reused(ntire_raw: Path, storage: StorageConfig) -> None:
-    builder = NTIRE(storage.root, raw_path=ntire_raw)
+    builder = NTIRE(raw_path=ntire_raw, storage=storage)
     builder.load("val")
     csv_path = builder.layout.split_path("val")
     stamp = csv_path.stat().st_mtime_ns
     (ntire_raw / "val" / "val_labels.csv").unlink()
-    assert len(NTIRE(storage.root, raw_path=ntire_raw).load("val")) == 8
+    assert len(NTIRE(raw_path=ntire_raw, storage=storage).load("val")) == 8
     assert csv_path.stat().st_mtime_ns == stamp
 
 
 def test_preparation_errors(ntire_raw: Path, storage: StorageConfig) -> None:
-    builder = NTIRE(storage.root, raw_path=ntire_raw)
+    builder = NTIRE(raw_path=ntire_raw, storage=storage)
     with pytest.raises(LayoutError, match="group"):
         builder.load("train")
     with pytest.raises(LayoutError, match="Unknown split"):
         builder.load("nope")
     with pytest.raises(LayoutError, match="auto_prepare"):
-        NTIRE(storage.root, raw_path=ntire_raw, auto_prepare=False).load("val")
+        NTIRE(
+            raw_path=ntire_raw,
+            storage=storage.model_copy(update={"auto_prepare": False}),
+        ).load("val")
     with pytest.raises(LayoutError, match="not published"):
-        NTIRE(storage.root).load("test_private")
+        NTIRE(storage=storage).load("test_private")
 
 
 def test_custom_split_from_existing_images(
     ntire_raw: Path, storage: StorageConfig
 ) -> None:
-    builder = NTIRE(storage.root, raw_path=ntire_raw)
+    builder = NTIRE(raw_path=ntire_raw, storage=storage)
     train = builder.load("shard_0")
     write_records(builder.layout.split_path("my_val"), train[:2])
     assert builder.load("my_val") == train[:2]
@@ -125,7 +128,7 @@ def test_hub_download_extracts_archives(
         return str(local_dir)
 
     monkeypatch.setattr(hub, "snapshot_download", fake_snapshot_download)
-    builder = NTIRE(storage.root)
+    builder = NTIRE(storage=storage)
     records = builder.load("val")
     assert len(records) == 8
     raw_val = builder.layout.raw_dir / "val"
@@ -142,7 +145,7 @@ def test_hub_download_extracts_archives(
 
 
 def test_mllm_generated(mllm_raw: Path, storage: StorageConfig) -> None:
-    builder = MLLMGenerated(storage.root, raw_path=mllm_raw)
+    builder = MLLMGenerated(raw_path=mllm_raw, storage=storage)
     assert builder.default_val_splits == ()
     records = builder.load("train")
     assert len(records) == 18
@@ -151,3 +154,11 @@ def test_mllm_generated(mllm_raw: Path, storage: StorageConfig) -> None:
     assert {record.generator for record in records} == {None, "GPT Image 2", "FLUX.2"}
     assert {record.extra["domain"] for record in records} == {"hybrid", "texture"}
     assert "images/gpt_image_2/hybrid/0000.png" in {record.image for record in records}
+
+
+def test_default_storage_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("VIY_ROOT", str(tmp_path / "custom"))
+    assert StorageConfig().root == tmp_path / "custom"
+    assert NTIRE().layout.dir == tmp_path / "custom" / "ntire"
+    monkeypatch.delenv("VIY_ROOT")
+    assert StorageConfig().root == Path.home() / ".cache" / "viy"

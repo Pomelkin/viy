@@ -10,6 +10,7 @@ from .records import write_records
 from .store import DatasetLayout
 from .store import LayoutManifest
 from .store import SplitEntry
+from .store import default_root
 
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "SplitEntry",
     "check_split",
     "default_link_mode",
+    "default_root",
     "link_files",
     "read_records",
     "write_records",

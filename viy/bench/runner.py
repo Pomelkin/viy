@@ -47,7 +47,7 @@ class BenchmarkConfig(StrictPydanticBaseModel):
         overwrite (bool): Recompute tasks that already have results.
     """
 
-    storage: StorageConfig
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     output_dir: Path
     tasks: list[str] | None = None
     sources: list[DatasetSourceConfig] = Field(default_factory=list)
@@ -84,7 +84,6 @@ class Benchmark:
     Example:
         >>> benchmark = Benchmark(
         ...     tasks=get_tasks(["ntire"]),
-        ...     storage=StorageConfig(root=Path("/data/viy")),
         ...     output_dir=Path("results"),
         ... )
         >>> results = benchmark.run(MyDetector())
@@ -94,8 +93,8 @@ class Benchmark:
     def __init__(
         self,
         tasks: Sequence[DetectionTask],
-        storage: StorageConfig,
         output_dir: Path,
+        storage: StorageConfig | None = None,
         sources: Sequence[DatasetSourceConfig] = (),
         batch_size: int = 64,
         num_workers: int = 8,
@@ -106,8 +105,9 @@ class Benchmark:
 
         Args:
             tasks (Sequence[DetectionTask]): Tasks to run in order.
-            storage (StorageConfig): Canonical layout location and preparation settings.
             output_dir (Path): Directory results are written to.
+            storage (StorageConfig | None): Canonical layout location and preparation
+                settings; ``None`` uses the defaults.
             sources (Sequence[DatasetSourceConfig]): Local raw copies of datasets.
             batch_size (int): Inference batch size.
             num_workers (int): DataLoader workers decoding and preprocessing images.
@@ -116,7 +116,7 @@ class Benchmark:
         if len(tasks) == 0:
             raise ValueError("A benchmark needs at least one task.")
         self.tasks = list(tasks)
-        self.storage = storage
+        self.storage = StorageConfig() if storage is None else storage
         self.output_dir = Path(output_dir)
         self.sources = {source.name: source for source in sources}
         self.batch_size = batch_size
