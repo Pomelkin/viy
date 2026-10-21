@@ -27,9 +27,10 @@ viy/
     pipeline.py      build_step, AugmentationPipeline
   data/
     preprocessing.py Preprocessor, PreprocessingConfig
-    dataset.py       DetectionDataset, ConcatDetectionDataset, DetectionSample
-    factory.py       TrainValDatasets, subsample, overlap check
-    configs.py       TrainDataConfig, TrainDatasetConfig
+    dataset.py       SplitDataset (one split), DetectionSample
+    detection.py     DatasetSpec, DetectionDataset (several splits, one stage), check_disjoint
+    sampling.py      subsample
+    configs.py       Stage, DatasetSpecConfig, DetectionDatasetConfig
   bench/
     model.py         DetectorModel, ModelMeta
     task.py          TaskMetadata, DetectionTask, builtin_tasks, get_tasks, register_task
@@ -47,7 +48,8 @@ Data flow for training:
 raw files --DatasetBuilder.collect--> RawSample(source, record)
           --link_files--> <root>/<ds>/images/..., --write_records--> splits/<split>.csv
           --DatasetBuilder.load--> list[SampleRecord] + check_split
-          --DetectionDataset--> decode -> AugmentationPipeline(image, rng) -> Preprocessor -> DetectionSample
+          --SplitDataset--> decode -> AugmentationPipeline(image, rng) -> Preprocessor -> DetectionSample
+          --DetectionDataset--> concatenation of the SplitDatasets of one stage
 ```
 
 The benchmark takes the same path up to `load`. After that, `model.preprocess` runs in workers, `model.predict` scores the batches, and `DetectionTask.evaluate` turns slices and metrics into a `TaskResult`.
@@ -65,7 +67,8 @@ Keep these true; the tests rely on them.
 - **A proxy declares `proxy_of`, ends its name with `_proxy`, and warns when created.** Registration rejects any mismatch.
 - **Registration happens on class creation** through `__init_subclass__` for `DatasetBuilder` and `ImageOp`. A new module must be imported from its package `__init__.py`.
 - **Configs subclass `kostyl.StrictPydanticBaseModel`.** Objects built from a config expose `from_pydantic_model(config)`.
-- **Validation splits never overlap training splits.** The check compares resolved file paths.
+- **Every entry point accepts `storage: StorageConfig | None`.** `None` means the default root, `$VIY_ROOT` or `~/.cache/viy`; no API requires a path.
+- **Training and validation datasets are built separately**, one `DetectionDataset` per stage. `check_disjoint` compares resolved file paths to catch overlap.
 
 ## Code conventions
 
