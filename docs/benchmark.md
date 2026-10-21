@@ -61,7 +61,7 @@ Scores outside `[0, 1]` are accepted for the threshold-free metrics, with a warn
 | `ntire/val` | NTIRE validation | 10,000 images, half distorted |
 | `ntire/val_hard` | NTIRE hard validation | adds neural codecs and adversarial attacks |
 | `ntire/test_public` | NTIRE public test | adds watermarks, Cheng2020, WMForger |
-| `ntire/test_private` | NTIRE private test | unpublished, needs a local copy; per-image generators |
+| `ntire/test_private` | NTIRE private test | stored locally only, needs `raw_path`; per-image generators |
 | `mllm_generated/train` | MLLM-Generated, whole dataset | no evaluation split exists; skip it for models trained on this dataset |
 
 Every validation and test split of a registered dataset becomes a task automatically. A dataset without such splits gets tasks on its training splits, marked `evaluates_train_split`, and they log a warning when run.

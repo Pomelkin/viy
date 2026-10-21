@@ -112,7 +112,7 @@ The groups were identified as sets of operations that never co-occur in a chain.
 
 The validation and test presets are meant for analysis and for building distorted copies of clean data. For training:
 - `aggressive` is a strong augmentation: the public test mix applied to 90% of images;
-- `aggressive_stage6` is the same without the JPEG AI and WMForger proxies, for use together with the genuine examples of `ntire/shard_6`.
+- `aggressive_stage6` is the same without the JPEG AI and WMForger proxies, for use together with the genuine examples of `ntire/shard_6`, a split stored locally only.
 
 Robustness to a transform is only measured honestly when the model never saw it during training. To keep such transforms out of training, exclude them:
 
@@ -190,7 +190,7 @@ Every proxy logs one warning per process when it is created:
 WARNING [base.py] Augmentation 'cheng2020_proxy' is a proxy of the Cheng2020 learned codec, not a replacement: ...
 ```
 
-`op.is_proxy` and the `_proxy` name suffix identify proxies programmatically. Genuine JPEG AI and WMForger examples exist as the `ntire/shard_6` split. Genuine versions of the others are planned as offline-generated splits.
+`op.is_proxy` and the `_proxy` name suffix identify proxies programmatically. Genuine JPEG AI and WMForger examples exist as the `ntire/shard_6` split, which is stored locally only. Genuine versions of the others are planned as offline-generated splits.
 
 ## Running a pipeline
 

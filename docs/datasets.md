@@ -75,11 +75,13 @@ Each dataset is downloaded from the Hugging Face Hub unless a local copy of its 
 | `test_public` | test | Hub | 2,500 | yes | yes, 24 types | no |
 | `test_private` | test | local only | 2,500 | yes | yes | yes, 10 generators |
 
+> **Stored locally.** `shard_6` and `test_private` are not on the Hugging Face Hub; they exist only as local copies. Prepare them by pointing `raw_path` at a directory that contains them, as in the layout below. Without it, loading them raises an error.
+
 Further details:
 - **Split group:** `train` = `shard_0` … `shard_5`.
 - **Defaults:** training uses `train`; validation uses `val` and `val_hard`.
-- **`shard_6`** is an optional extension that is not part of the official release. It holds JPEG AI and WMForger versions of shard 0–5 images, made with the official JPEG AI reference software and the WMForger attack, and its `source_id` is the name of the original image. Use it only if you have a copy.
-- **`test_private`** is the private NTIRE test set with per-image generators. It is not published; use it only if you have a copy.
+- **`shard_6`** is an optional extension that is not part of the official release. It holds JPEG AI and WMForger versions of shard 0–5 images, made with the official JPEG AI reference software and the WMForger attack, and its `source_id` is the name of the original image. Stored locally only.
+- **`test_private`** is the private NTIRE test set with per-image generators. Stored locally only.
 - **Labelled half:** half of every validation and test split is distorted, and the chains are recorded per image. How these chains were built is described in [Augmentations](augmentations.md#ntire-presets).
 
 Expected raw layout for `raw_path`. The published part is exactly what the three Hub repositories give when unpacked side by side under `train/`, `val/` and `test/`:
