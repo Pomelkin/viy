@@ -77,9 +77,9 @@ class Preprocessor:
     def __init__(
         self,
         image_size: int,
-        resize_mode: ResizeMode = ResizeMode.RESIZE,
+        resize_mode: ResizeMode | str = ResizeMode.RESIZE,
         crop_padding: int = 32,
-        interpolation: Interpolation = Interpolation.BICUBIC,
+        interpolation: Interpolation | str = Interpolation.BICUBIC,
         mean: RGB = IMAGENET_MEAN,
         std: RGB = IMAGENET_STD,
     ) -> None:
@@ -88,18 +88,18 @@ class Preprocessor:
 
         Args:
             image_size (int): Side of the square output.
-            resize_mode (ResizeMode): How the image is brought to the output size.
+            resize_mode (ResizeMode | str): How the image is brought to the output size.
             crop_padding (int): Margin removed by the centre crop.
-            interpolation (Interpolation): Resampling filter.
+            interpolation (Interpolation | str): Resampling filter.
             mean (RGB): Per-channel mean on the ``[0, 1]`` scale.
             std (RGB): Per-channel standard deviation on the ``[0, 1]`` scale.
         """
         if any(value <= 0 for value in std):
             raise ValueError(f"Standard deviations must be positive, got {std}.")
         self.image_size = image_size
-        self.resize_mode = resize_mode
+        self.resize_mode = ResizeMode(resize_mode)
         self.crop_padding = crop_padding
-        self.resample = _RESAMPLING[interpolation]
+        self.resample = _RESAMPLING[Interpolation(interpolation)]
         self.mean = torch.tensor(mean, dtype=torch.float32).view(3, 1, 1)
         self.std = torch.tensor(std, dtype=torch.float32).view(3, 1, 1)
         return

@@ -1,30 +1,34 @@
-from .configs import TrainDataConfig
-from .configs import TrainDatasetConfig
-from .dataset import ConcatDetectionDataset
-from .dataset import DetectionDataset
+from .configs import DatasetSpecConfig
+from .configs import DetectionDatasetConfig
+from .configs import Stage
 from .dataset import DetectionSample
-from .factory import TrainValDatasets
-from .factory import subsample
+from .dataset import SplitDataset
+from .detection import DatasetSpec
+from .detection import DetectionDataset
+from .detection import check_disjoint
 from .preprocessing import IMAGENET_MEAN
 from .preprocessing import IMAGENET_STD
 from .preprocessing import Interpolation
 from .preprocessing import PreprocessingConfig
 from .preprocessing import Preprocessor
 from .preprocessing import ResizeMode
+from .sampling import subsample
 
 
 __all__ = [
     "IMAGENET_MEAN",
     "IMAGENET_STD",
-    "ConcatDetectionDataset",
+    "DatasetSpec",
+    "DatasetSpecConfig",
     "DetectionDataset",
+    "DetectionDatasetConfig",
     "DetectionSample",
     "Interpolation",
     "PreprocessingConfig",
     "Preprocessor",
     "ResizeMode",
-    "TrainDataConfig",
-    "TrainDatasetConfig",
-    "TrainValDatasets",
+    "SplitDataset",
+    "Stage",
+    "check_disjoint",
     "subsample",
 ]

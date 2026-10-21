@@ -8,7 +8,6 @@ from typing import override
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import ConcatDataset
 from torch.utils.data import Dataset
 
 from viy.augs import AppliedOp
@@ -37,7 +36,7 @@ class DetectionSample(TypedDict):
     augmentations: str
 
 
-class DetectionDataset(Dataset[DetectionSample]):
+class SplitDataset(Dataset[DetectionSample]):
     """
     Images of one split with optional augmentation and preprocessing.
 
@@ -119,35 +118,3 @@ class DetectionDataset(Dataset[DetectionSample]):
             self._worker_rng = np.random.default_rng((self.seed, torch.initial_seed()))
             self._worker_pid = os.getpid()
         return self._worker_rng
-
-
-class ConcatDetectionDataset(ConcatDataset[DetectionSample]):
-    """Concatenation of detection datasets that keeps access to its parts."""
-
-    def __init__(self, datasets: Sequence[DetectionDataset]) -> None:
-        """
-        Initialize the concatenation.
-
-        Args:
-            datasets (Sequence[DetectionDataset]): Parts in order.
-        """
-        super().__init__(list(datasets))
-        self.parts = list(datasets)
-        return
-
-    @property
-    def sources(self) -> list[str]:
-        """``<dataset>/<split>`` names of the parts."""
-        return [part.source for part in self.parts]
-
-    @property
-    def labels(self) -> list[int]:
-        """Label of every sample in order."""
-        return [label for part in self.parts for label in part.labels]
-
-    def part(self, source: str) -> DetectionDataset:
-        """Return the part named ``source``."""
-        for part in self.parts:
-            if part.source == source:
-                return part
-        raise KeyError(f"No part '{source}'. Available: {', '.join(self.sources)}.")

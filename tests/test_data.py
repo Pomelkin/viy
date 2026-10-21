@@ -1,49 +1,45 @@
 import json
 from pathlib import Path
 
+import albumentations as A
 import numpy as np
 import pytest
 import torch
 from torch.utils.data import DataLoader
 
+from viy.augs import AugmentationPipeline
+from viy.augs import NTIREPresetStep
+from viy.augs import OpStep
+from viy.data import DatasetSpec
+from viy.data import DetectionDataset
+from viy.data import DetectionDatasetConfig
 from viy.data import Preprocessor
 from viy.data import ResizeMode
-from viy.data import TrainDataConfig
-from viy.data import TrainValDatasets
+from viy.data import Stage
+from viy.data import check_disjoint
 from viy.data import subsample
 from viy.datasets import StorageConfig
 from viy.layout import SampleRecord
 
 
-def _config(
-    storage: StorageConfig, ntire_raw: Path, mllm_raw: Path, **ntire: object
-) -> TrainDataConfig:
-    return TrainDataConfig.model_validate(
-        {
-            "storage": storage.model_dump(),
-            "datasets": [
-                {"name": "ntire", "raw_path": str(ntire_raw), **ntire},
-                {"name": "mllm_generated", "raw_path": str(mllm_raw)},
-            ],
-            "preprocessing": {"image_size": 32},
-            "val_preprocessing": {
-                "image_size": 32,
-                "resize_mode": "resize_center_crop",
-                "crop_padding": 8,
-            },
-            "train_augmentation": {
-                "steps": [
-                    {"kind": "albumentations", "transform": "HorizontalFlip", "p": 0.5},
-                    {
-                        "kind": "ntire_preset",
-                        "preset": "aggressive",
-                        "distort_probability": 1.0,
-                    },
-                ]
-            },
-            "val_augmentation": {"steps": [{"kind": "op", "op": "jpeg", "p": 0.5}]},
-            "seed": 3,
-        }
+def _train(
+    storage: StorageConfig, ntire_raw: Path, mllm_raw: Path, limit: int | None = None
+) -> DetectionDataset:
+    return DetectionDataset(
+        [
+            DatasetSpec("ntire", splits=["train"], limit=limit, raw_path=ntire_raw),
+            DatasetSpec("mllm_generated", raw_path=mllm_raw),
+        ],
+        stage="train",
+        preprocessor=Preprocessor(image_size=32),
+        augmentation=AugmentationPipeline(
+            [
+                A.HorizontalFlip(p=0.5),
+                NTIREPresetStep("aggressive_stage6", distort_probability=1.0),
+            ]
+        ),
+        storage=storage,
+        seed=3,
     )
 
 
@@ -53,8 +49,13 @@ def test_preprocessor_modes() -> None:
         tensor = Preprocessor(image_size=24, resize_mode=mode)(image)
         assert tensor.shape == (3, 24, 24)
         assert tensor.dtype == torch.float32
+    assert Preprocessor(image_size=24, resize_mode="resize_center_crop")(
+        image
+    ).shape == (3, 24, 24)
     plain = Preprocessor(image_size=8, mean=(0.0, 0.0, 0.0), std=(1.0, 1.0, 1.0))(image)
     assert torch.allclose(plain, torch.full_like(plain, 128 / 255))
+    with pytest.raises(ValueError, match="squash"):
+        Preprocessor(image_size=8, resize_mode="squash")
 
 
 def test_subsample_is_stratified() -> None:
@@ -71,71 +72,125 @@ def test_subsample_is_stratified() -> None:
     assert subsample(records, None, seed=0) == records
 
 
-def test_train_val_datasets(
-    storage: StorageConfig, ntire_raw: Path, mllm_raw: Path
-) -> None:
-    datasets = TrainValDatasets.from_pydantic_model(
-        _config(storage, ntire_raw, mllm_raw, train_limit=2)
-    )
-    assert datasets.train.sources == [
+def test_train_dataset(storage: StorageConfig, ntire_raw: Path, mllm_raw: Path) -> None:
+    train = _train(storage, ntire_raw, mllm_raw, limit=2)
+    assert train.stage is Stage.TRAIN
+    assert train.sources == [
         *(f"ntire/shard_{i}" for i in range(6)),
         "mllm_generated/train",
     ]
-    assert datasets.val.sources == ["ntire/val", "ntire/val_hard"]
-    assert len(datasets.train) == 6 * 2 + 18
-    assert len(datasets.val) == 16
+    assert len(train) == 6 * 2 + 18
+    assert len(train.labels) == len(train)
 
-    sample = datasets.train[0]
+    sample = train[0]
     assert sample["image"].shape == (3, 32, 32)
     assert sample["source"] == "ntire/shard_0"
     trace = json.loads(sample["augmentations"])
     assert all(set(op) == {"name", "scale"} for op in trace)
+    assert len({train[1]["augmentations"] for _ in range(8)}) > 1
 
-    val_part = datasets.val.part("ntire/val")
-    first, second = val_part[2], val_part[2]
-    assert first["augmentations"] == second["augmentations"]
-    assert torch.equal(first["image"], second["image"])
-
-    batch = next(iter(DataLoader(datasets.train, batch_size=4, shuffle=True)))
+    batch = next(iter(DataLoader(train, batch_size=4, shuffle=True)))
     assert batch["image"].shape == (4, 3, 32, 32)
     assert batch["label"].shape == (4,)
     assert len(batch["augmentations"]) == 4
 
 
-def test_training_augmentations_vary(
-    storage: StorageConfig, ntire_raw: Path, mllm_raw: Path
-) -> None:
-    datasets = TrainValDatasets.from_pydantic_model(
-        _config(storage, ntire_raw, mllm_raw)
+def test_val_dataset(storage: StorageConfig, ntire_raw: Path, mllm_raw: Path) -> None:
+    val = DetectionDataset(
+        [
+            DatasetSpec("ntire", raw_path=ntire_raw),
+            DatasetSpec("mllm_generated", raw_path=mllm_raw),
+        ],
+        stage=Stage.VAL,
+        preprocessor=Preprocessor(
+            image_size=32, resize_mode="resize_center_crop", crop_padding=8
+        ),
+        augmentation=AugmentationPipeline([OpStep("jpeg", p=0.5)]),
+        storage=storage,
     )
-    traces = {datasets.train[1]["augmentations"] for _ in range(8)}
-    assert len(traces) > 1
+    assert val.sources == ["ntire/val", "ntire/val_hard"]
+    parts = val.by_source()
+    assert list(parts) == ["ntire/val", "ntire/val_hard"]
+    first, second = parts["ntire/val"][2], parts["ntire/val"][2]
+    assert first["augmentations"] == second["augmentations"]
+    assert torch.equal(first["image"], second["image"])
+    loaders = {name: DataLoader(part, batch_size=4) for name, part in parts.items()}
+    assert list(loaders) == list(parts)
+    assert sum(len(part) for part in parts.values()) == 16
 
 
-def test_validation_requirements(
+def test_from_pydantic_model(
     storage: StorageConfig, ntire_raw: Path, mllm_raw: Path
 ) -> None:
-    with pytest.raises(
-        ValueError, match="None of the configured datasets has validation splits"
-    ):
-        TrainValDatasets.from_pydantic_model(
-            _config(storage, ntire_raw, mllm_raw, val_splits=[])
-        )
-    with pytest.raises(ValueError, match="both training and validation"):
-        TrainValDatasets.from_pydantic_model(
-            _config(
-                storage,
-                ntire_raw,
-                mllm_raw,
-                train_splits=["shard_0"],
-                val_splits=["shard_0"],
-            )
+    config = DetectionDatasetConfig.model_validate(
+        {
+            "datasets": [
+                {
+                    "name": "ntire",
+                    "raw_path": str(ntire_raw),
+                    "splits": ["shard_0", "shard_6"],
+                    "limit": 2,
+                },
+                {"name": "mllm_generated", "raw_path": str(mllm_raw)},
+            ],
+            "stage": "train",
+            "preprocessing": {"image_size": 32},
+            "augmentation": {
+                "steps": [
+                    {"kind": "albumentations", "transform": "HorizontalFlip", "p": 0.5}
+                ]
+            },
+            "storage": storage.model_dump(),
+            "seed": 1,
+        }
+    )
+    dataset = DetectionDataset.from_pydantic_model(config)
+    assert dataset.sources == ["ntire/shard_0", "ntire/shard_6", "mllm_generated/train"]
+    assert len(dataset) == 2 + 2 + 18
+
+
+def test_stage_rules(storage: StorageConfig, ntire_raw: Path, mllm_raw: Path) -> None:
+    with pytest.raises(ValueError, match="has val splits"):
+        DetectionDataset(
+            [DatasetSpec("mllm_generated", raw_path=mllm_raw)],
+            stage="val",
+            preprocessor=Preprocessor(image_size=32),
+            storage=storage,
         )
     with pytest.raises(ValueError, match="more than once"):
-        TrainDataConfig.model_validate(
-            {
-                "storage": storage.model_dump(),
-                "datasets": [{"name": "ntire"}, {"name": "ntire"}],
-                "preprocessing": {"image_size": 32},
-            }
+        DetectionDataset(
+            [
+                DatasetSpec("ntire", splits=["shard_0"], raw_path=ntire_raw),
+                DatasetSpec("ntire", splits=["shard_0", "shard_1"], raw_path=ntire_raw),
+            ],
+            stage="train",
+            preprocessor=Preprocessor(image_size=32),
+            storage=storage,
         )
+    with pytest.raises(ValueError, match="'test' is not a valid Stage"):
+        DetectionDataset(
+            [], stage="test", preprocessor=Preprocessor(image_size=32), storage=storage
+        )
+
+
+def test_check_disjoint(
+    storage: StorageConfig, ntire_raw: Path, mllm_raw: Path
+) -> None:
+    train = _train(storage, ntire_raw, mllm_raw)
+    val = DetectionDataset(
+        [DatasetSpec("ntire", raw_path=ntire_raw)],
+        stage="val",
+        preprocessor=Preprocessor(image_size=32),
+        storage=storage,
+    )
+    check_disjoint(train, val)
+    leaky = DetectionDataset(
+        [DatasetSpec("ntire", splits=["shard_0"], raw_path=ntire_raw)],
+        stage="val",
+        preprocessor=Preprocessor(image_size=32),
+        storage=storage,
+    )
+    with pytest.raises(
+        ValueError, match="appear in both the train and the val dataset"
+    ):
+        check_disjoint(train, val, leaky)
