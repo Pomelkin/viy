@@ -127,52 +127,16 @@ Robustness to a transform is only measured honestly when the model never saw it 
 
 Names and severity levels follow the `distortions` and `distortion_scales` columns of the NTIRE metadata, so augmentation traces and benchmark slices share one vocabulary. NTIRE does not document the meaning of every level. The semantics of `colorshift`, `clahe`, `isonoise`, `shotnoise`, `perspective` and `jpeg_recompression_2` are interpreted by viy; treat those levels as ordinal.
 
-| Operation | Default levels | Effect |
-|---|---|---|
-| **color** | | |
-| `brighten` | 0.1 0.2 0.4 0.7 1.1 | scale intensities by `1 + level` |
-| `darken` | 0.05 0.1 0.2 0.4 0.8 | scale intensities by `1 - level` |
-| `lincontrchange` | -0.6 -0.4 0 0.15 0.3 | scale deviations from the mean luminance by `1 + level` |
-| `colorsat` | -0.4 0 0.1 0.2 0.4 | scale deviations from the per-pixel luminance by `1 + level` |
-| `colorshift` | 1 3 6 8 12 | shift red and blue channels by `level` pixels in opposite directions |
-| `rgbshift` | 10 20 30 40 50 | add a random offset in `[-level, level]` to every channel |
-| `jitter` | 0.05 0.1 0.2 0.5 1.0 | brightness, contrast and saturation factors in `[1 - level, 1 + level]`, random order |
-| `quantization` | 7 10 13 16 20 | `level` values per channel |
-| `randomtonecurve` | 0.05 0.15 0.2 0.3 0.4 | Bezier tone curve, control points drawn with spread `level` |
-| `clahe` | 0 1 2 3 4 | CLAHE on lightness, clip limit 1, 2, 3, 4, 6 |
-| **blur** | | |
-| `gausblur` | 0.1 0.5 1 2 5 | Gaussian blur, sigma `level` |
-| `lensblur` | 1 2 4 6 8 | disk kernel of radius `level` |
-| `motionblur` | 1 2 4 6 10 | line kernel of length `2·level + 1` at a random angle |
-| `glassblur` | 1 2 3 4 6 | blur, displace pixels by up to `level`, blur again |
-| **noise** | | |
-| `whitenoise` | 0.001 0.002 0.0025 0.003 0.005 | Gaussian noise of variance `level` on the `[0, 1]` scale |
-| `impulsenoise` | 0.001 0.005 0.01 0.015 0.02 | salt and pepper on a `level` share of pixels |
-| `multnoise` | 0.001 0.005 0.01 0.015 0.035 | speckle `x·(1 + n)`, variance of `n` is `level` |
-| `isonoise` | 0 1 2 3 4 | sensor noise: Poisson lightness and Gaussian hue noise |
-| `shotnoise` | 0 1 2 3 4 | Poisson photon noise with ImageNet-C photon counts |
-| **compression and resampling** | | |
-| `jpeg` | 7 12 28 38 45 | JPEG with quality `level` |
-| `jpeg2000` | 16 32 45 120 170 | JPEG 2000 with compression ratio `level` |
-| `jpeg_recompression_1` | 2 3 4 5 | `level` JPEG passes with random quality 30–90 |
-| `jpeg_recompression_2` | 0 1 2 3 4 | two JPEG passes with a block-grid shift in between, stronger with `level` |
-| `jpeg_recompression_comb` | 2 3 4 5 | `level` passes alternating JPEG and JPEG 2000 |
-| `pixelate` | 0.01 0.05 0.1 0.2 0.5 | downsample by `1 - level`, nearest-neighbour upsample |
-| `downscale` | range 0.3–0.8 | reduce resolution by a factor drawn from the range; the output is smaller |
-| **geometry** | | |
-| `randomcrop` | 0.4 0.5 0.6 0.7 0.8 | crop keeping a `level` share of the area and the aspect ratio |
-| `randomaspectcrop` | 0.4 0.5 0.6 0.7 0.8 | crop keeping a `level` share of the area with a changed aspect ratio |
-| `perspective` | 0 1 2 3 4 | map a random inner quadrilateral to the full frame |
-| **proxies** | | |
-| `jpeg_ai_proxy` | 0 1 2 3 | WebP in place of JPEG AI; 0 is the lowest bitrate |
-| `cheng2020_proxy` | 1 2 3 4 5 | resampling and WebP in place of Cheng2020; 1 is the lowest bitrate |
-| `jpeg_recompression_comb_jpegai_proxy` | 2 3 4 5 | JPEG alternating with `jpeg_ai_proxy` |
-| `adv_embed_clip_proxy` | 4 6 8 10 12 | random low-frequency sign noise of L∞ radius `level` |
-| `adv_embed_resnet_proxy` | 4 6 8 10 12 | random edge-aligned sign noise of L∞ radius `level` |
-| `wmforger_proxy` | 0.05 0.1 0.2 0.5 1.0 | smooth plus edge residual of amplitude `2 + 7·level` |
-| `watermark_proxy` | arwgan dct_marker mbrs pimog pixelseal stega_stamp | carrier pattern named by the level; also fin, maskwm, sshidden, syncseal |
+| Family | Operations |
+|---|---|
+| color and tone | `brighten`, `darken`, `lincontrchange`, `colorsat`, `colorshift`, `rgbshift`, `jitter`, `quantization`, `randomtonecurve`, `clahe` |
+| blur | `gausblur`, `lensblur`, `motionblur`, `glassblur` |
+| noise | `whitenoise`, `impulsenoise`, `multnoise`, `isonoise`, `shotnoise` |
+| compression and resampling | `jpeg`, `jpeg2000`, `jpeg_recompression_1`, `jpeg_recompression_2`, `jpeg_recompression_comb`, `pixelate`, `downscale` |
+| geometry | `randomcrop`, `randomaspectcrop`, `perspective` |
+| proxies | `jpeg_ai_proxy`, `cheng2020_proxy`, `jpeg_recompression_comb_jpegai_proxy`, `adv_embed_clip_proxy`, `adv_embed_resnet_proxy`, `wmforger_proxy`, `watermark_proxy` |
 
-The authoritative list is `viy.augs.OPS.names()`.
+The [operations reference](operations.md) describes every operation with its level semantics, default levels and fixed and random parameters. The authoritative list is `viy.augs.OPS.names()`.
 
 ## Proxies
 

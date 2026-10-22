@@ -60,7 +60,8 @@ print(results_table(benchmark.run(MyDetector())))   # MyDetector implements viy.
 | [Getting started](docs/getting-started.md) | Install, storage, the first training loader and the first benchmark run |
 | [Datasets](docs/datasets.md) | Canonical layout, supported datasets, custom splits, sanity checks |
 | [Training data](docs/training.md) | `DetectionDataset`, stages, configs, preprocessing, DDP and Lightning |
-| [Augmentations](docs/augmentations.md) | Steps, NTIRE presets, operations reference, proxies |
+| [Augmentations](docs/augmentations.md) | Pipelines, steps, NTIRE presets, proxies |
+| [Operations reference](docs/operations.md) | Every operation with its description and hyperparameters |
 | [Benchmark](docs/benchmark.md) | `DetectorModel`, tasks, results, metrics and slices |
 | [Extending](docs/extending.md) | New datasets, operations and tasks |
 | [Agent notes](docs/agents.md) | Architecture, invariants and conventions for coding agents |
