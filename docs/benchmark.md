@@ -52,6 +52,8 @@ class MyDetector(DetectorModel):
 | `predict(batch)` | receives the stacked tensors and returns the probability that each image is generated, shape `(B,)`. It runs under `torch.inference_mode()`, and the model moves the batch to its own device |
 | `threshold` | decision threshold of the threshold-dependent metrics |
 
+`viy.data.Preprocessor` fits `preprocess` well. Configure it with custom settings or wrap the transformers image processor of your backbone: `Preprocessor(image_processor=AutoImageProcessor.from_pretrained(...))`.
+
 Scores outside `[0, 1]` are accepted for the threshold-free metrics, with a warning. Non-finite scores are an error.
 
 ## Tasks

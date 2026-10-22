@@ -23,7 +23,7 @@ Training data:
 import albumentations as A
 from torch.utils.data import DataLoader
 from viy.augs import AugmentationPipeline, NTIREPresetStep
-from viy.data import DatasetSpec, DetectionDataset, Preprocessor
+from viy.data import DatasetSpec, DetectionCollator, DetectionDataset, Preprocessor
 
 train = DetectionDataset(
     [DatasetSpec("ntire", splits=["shard_0"])],     # downloaded from the Hub on first use
@@ -33,8 +33,9 @@ train = DetectionDataset(
 )
 val = DetectionDataset([DatasetSpec("ntire")], stage="val", preprocessor=Preprocessor(image_size=256))
 
-train_loader = DataLoader(train, batch_size=64, shuffle=True, num_workers=8)
-val_loaders = {name: DataLoader(part, batch_size=64) for name, part in val.by_source().items()}
+collate = DetectionCollator()
+train_loader = DataLoader(train, batch_size=64, shuffle=True, num_workers=8, collate_fn=collate)
+val_loaders = {name: DataLoader(part, batch_size=64, collate_fn=collate) for name, part in val.by_source().items()}
 ```
 
 Every class also has `from_pydantic_model`, so the same setup can come from a YAML config.

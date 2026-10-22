@@ -26,7 +26,7 @@ import albumentations as A
 from torch.utils.data import DataLoader
 
 from viy.augs import AugmentationPipeline, NTIREPresetStep
-from viy.data import DatasetSpec, DetectionDataset, Preprocessor
+from viy.data import DatasetSpec, DetectionCollator, DetectionDataset, Preprocessor
 
 train = DetectionDataset(
     [DatasetSpec("ntire", splits=["shard_0"])],
@@ -36,12 +36,13 @@ train = DetectionDataset(
 )
 val = DetectionDataset([DatasetSpec("ntire")], stage="val", preprocessor=Preprocessor(image_size=256))
 
-train_loader = DataLoader(train, batch_size=64, shuffle=True, num_workers=8)
-val_loaders = {name: DataLoader(part, batch_size=64) for name, part in val.by_source().items()}
+collate = DetectionCollator()
+train_loader = DataLoader(train, batch_size=64, shuffle=True, num_workers=8, collate_fn=collate)
+val_loaders = {name: DataLoader(part, batch_size=64, collate_fn=collate) for name, part in val.by_source().items()}
 batch = next(iter(train_loader))
-batch["image"].shape   # torch.Size([64, 3, 256, 256])
-batch["label"]         # 0 real, 1 fake
-batch["source"]        # ["ntire/shard_2", ...]
+batch["images"].shape   # torch.Size([64, 3, 256, 256])
+batch["labels"]         # 0 real, 1 generated
+batch["sources"]        # ["ntire/shard_0", ...]
 ```
 
 The first call downloads one training shard (about 20 GB) and both validation splits (about 4 GB) from the Hugging Face Hub, unpacks them and links the images. Later calls only read the split CSV files and check that the images exist. Drop `splits` to train on all six shards.

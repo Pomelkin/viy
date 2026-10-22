@@ -9,7 +9,7 @@ import albumentations as A
 from torch.utils.data import DataLoader
 
 from viy.augs import AugmentationPipeline, NTIREPresetStep
-from viy.data import DatasetSpec, DetectionDataset, Preprocessor, check_disjoint
+from viy.data import DatasetSpec, DetectionCollator, DetectionDataset, Preprocessor, check_disjoint
 
 train = DetectionDataset(
     [
@@ -32,12 +32,17 @@ val = DetectionDataset(
 )
 check_disjoint(train, val)
 
-train_loader = DataLoader(train, batch_size=128, shuffle=True, num_workers=16, persistent_workers=True)
+collate = DetectionCollator()
+train_loader = DataLoader(
+    train, batch_size=128, shuffle=True, num_workers=16, persistent_workers=True, collate_fn=collate
+)
 val_loaders = {
-    name: DataLoader(part, batch_size=128, num_workers=8)
+    name: DataLoader(part, batch_size=128, num_workers=8, collate_fn=collate)
     for name, part in val.by_source().items()   # {"ntire/val": ..., "ntire/val_hard": ...}
 }
 ```
+
+Always pass `collate_fn=DetectionCollator()`: the default collate function of PyTorch cannot batch augmentation traces of different lengths.
 
 ### `DetectionDataset`
 
@@ -116,18 +121,37 @@ check_disjoint(train, val)
 | `storage` | `StorageConfig`; optional |
 | `seed` | int |
 
-## Samples
+## Samples and batches
+
+Indexing a dataset returns a `DetectionSample`, a `TypedDict`:
+
+| Key | Type | Content |
+|---|---|---|
+| `image` | `torch.Tensor`, `(3, H, W)` float | preprocessed image |
+| `label` | `int` | `0` real, `1` generated |
+| `source` | `str` | `<dataset>/<split>` the image comes from |
+| `index` | `int` | row of the image in its split |
+| `augmentations` | `tuple[AppliedOp, ...]` | applied augmentations in order, each with `name` and `scale` |
+
+`DetectionCollator` turns a list of samples into a `DetectionBatch`, also a `TypedDict`:
+
+| Key | Type | Content |
+|---|---|---|
+| `images` | `torch.Tensor`, `(B, 3, H, W)` float | stacked images |
+| `labels` | `torch.Tensor`, `(B,)` int64 | labels |
+| `sources` | `list[str]` | source of every image |
+| `indices` | `torch.Tensor`, `(B,)` int64 | row of every image in its split |
+| `augmentations` | `list[tuple[AppliedOp, ...]]` | augmentation trace of every image |
 
 ```python
-import json
+from viy.augs import trace_to_json
+from viy.data import DetectionBatch
 
-for batch in train_loader:
-    images = batch["image"]           # float tensor (B, 3, H, W), normalized
-    labels = batch["label"]           # int tensor (B,), 0 real / 1 generated
-    sources = batch["source"]         # list of "<dataset>/<split>"
-    indices = batch["index"]          # row of each image in its split
-    traces = [json.loads(trace) for trace in batch["augmentations"]]
-    # traces[0] == [{"name": "albumentations.HorizontalFlip", "scale": None}, {"name": "jpeg", "scale": 28}]
+batch: DetectionBatch = next(iter(train_loader))
+logits = model(batch["images"].cuda())
+loss = criterion(logits.squeeze(1), batch["labels"].cuda().float())
+batch["augmentations"][0]          # (AppliedOp(name='albumentations.HorizontalFlip', scale=None), AppliedOp(name='jpeg', scale=28))
+trace_to_json(batch["augmentations"][0])   # '[{"name": "albumentations.HorizontalFlip", "scale": null}, ...]'
 ```
 
 A `DetectionDataset` exposes:
@@ -136,9 +160,31 @@ A `DetectionDataset` exposes:
 - `.parts` lists the same `SplitDataset`s in order;
 - `.labels` gives every label in order, handy for a weighted sampler.
 
-A `SplitDataset` has `.records`, a list of `SampleRecord`, and `.image_path(index)`. With `batch["index"]`, they give the full metadata of any sample, such as its generator or original distortions.
+A `SplitDataset` has `.records`, a list of `SampleRecord`, and `.image_path(index)`. With `batch["indices"]`, they give the full metadata of any sample, such as its generator or original distortions.
 
 ## Preprocessing
+
+A `Preprocessor` is configured in one of two ways, never both:
+
+- **Custom settings:** `image_size` plus optional `resize_mode`, `crop_padding`, `interpolation`, `mean` and `std`.
+- **A transformers image processor**, which then defines resizing, cropping and normalization. Use it when the model expects the preprocessing of a pretrained backbone.
+
+```python
+from transformers import AutoImageProcessor
+from viy.data import Preprocessor
+
+custom = Preprocessor(image_size=224, resize_mode="shorter_side_center_crop", crop_padding=32)
+pretrained = Preprocessor(image_processor=AutoImageProcessor.from_pretrained("facebook/dinov2-small"))
+tensor = custom(pil_image_or_uint8_array)       # (3, 224, 224)
+```
+
+```yaml
+preprocessing: {image_size: 256, resize_mode: resize_center_crop}
+# or
+preprocessing: {image_processor: facebook/dinov2-small}    # Hub name or local path
+```
+
+Custom settings:
 
 | `resize_mode` | Effect |
 |---|---|
@@ -148,14 +194,7 @@ A `SplitDataset` has `.records`, a list of `SampleRecord`, and `.image_path(inde
 
 `interpolation` is `bicubic` by default, with `bilinear`, `lanczos`, `box` and `nearest` also available; all except `nearest` are antialiased. `mean` and `std` default to the ImageNet values.
 
-```python
-from viy.data import Preprocessor
-
-prep = Preprocessor(image_size=224, resize_mode="shorter_side_center_crop", crop_padding=32)
-tensor = prep(pil_image_or_uint8_array)       # (3, 224, 224)
-```
-
-Augmentations run first, on the decoded `uint8` image, and preprocessing runs after them. Crops and downscales in the augmentations change the resolution; preprocessing brings every image to `image_size`.
+Augmentations run first, on the decoded `uint8` image, and preprocessing runs after them. Crops and downscales in the augmentations change the resolution; preprocessing brings every image to one size.
 
 ## Randomness and reproducibility
 
@@ -180,7 +219,7 @@ for split in ntire.expand_splits(["train", "val", "val_hard"]):
 ```python
 import lightning as L
 from torch.utils.data import DataLoader
-from viy.data import DetectionDataset, DetectionDatasetConfig, check_disjoint
+from viy.data import DetectionCollator, DetectionDataset, DetectionDatasetConfig, check_disjoint
 
 
 class DetectionDataModule(L.LightningDataModule):
@@ -203,12 +242,17 @@ class DetectionDataModule(L.LightningDataModule):
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.train, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, persistent_workers=True
+            self.train,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            collate_fn=DetectionCollator(),
         )
 
     def val_dataloader(self) -> list[DataLoader]:
         return [
-            DataLoader(part, batch_size=self.batch_size, num_workers=self.num_workers)
+            DataLoader(part, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=DetectionCollator())
             for part in self.val.by_source().values()
         ]
 ```

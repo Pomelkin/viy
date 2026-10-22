@@ -26,8 +26,9 @@ viy/
     presets.py       NTIRE mixes expressed as step configs
     pipeline.py      build_step, AugmentationPipeline
   data/
-    preprocessing.py Preprocessor, PreprocessingConfig
+    preprocessing.py Preprocessor: custom settings or a transformers image processor
     dataset.py       SplitDataset (one split), DetectionSample
+    collate.py       DetectionCollator, DetectionBatch
     detection.py     DatasetSpec, DetectionDataset (several splits, one stage), check_disjoint
     sampling.py      subsample
     configs.py       Stage, DatasetSpecConfig, DetectionDatasetConfig
