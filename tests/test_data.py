@@ -5,7 +5,9 @@ import albumentations as A
 import numpy as np
 import pytest
 import torch
+from pydantic import ValidationError
 from torch.utils.data import DataLoader
+from transformers import ViTImageProcessorPil
 
 from viy.augs import AugmentationPipeline
 from viy.augs import NTIREPresetStep
@@ -13,6 +15,7 @@ from viy.augs import OpStep
 from viy.data import DatasetSpec
 from viy.data import DetectionDataset
 from viy.data import DetectionDatasetConfig
+from viy.data import PreprocessingConfig
 from viy.data import Preprocessor
 from viy.data import ResizeMode
 from viy.data import Stage
@@ -194,3 +197,30 @@ def test_check_disjoint(
         ValueError, match="appear in both the train and the val dataset"
     ):
         check_disjoint(train, val, leaky)
+
+
+def _vit_processor() -> ViTImageProcessorPil:
+    return ViTImageProcessorPil(
+        size={"height": 24, "width": 24}, image_mean=[0.5] * 3, image_std=[0.5] * 3
+    )
+
+
+def test_preprocessor_with_image_processor(tmp_path: Path) -> None:
+    image = np.full((40, 60, 3), 255, dtype=np.uint8)
+    tensor = Preprocessor(image_processor=_vit_processor())(image)
+    assert tensor.shape == (3, 24, 24)
+    assert torch.allclose(tensor, torch.ones_like(tensor))
+    with pytest.raises(ValueError, match="not both"):
+        Preprocessor(image_size=24, image_processor=_vit_processor())
+    with pytest.raises(ValueError, match="not both"):
+        Preprocessor(mean=(0.0, 0.0, 0.0), image_processor=_vit_processor())
+    with pytest.raises(ValueError, match="image_size"):
+        Preprocessor()
+
+    _vit_processor().save_pretrained(tmp_path / "processor")
+    config = PreprocessingConfig(image_processor=str(tmp_path / "processor"))
+    assert Preprocessor.from_pydantic_model(config)(image).shape == (3, 24, 24)
+    with pytest.raises(ValidationError, match="not both"):
+        PreprocessingConfig(image_size=24, image_processor="facebook/dinov2-small")
+    with pytest.raises(ValidationError, match="image_size"):
+        PreprocessingConfig()
