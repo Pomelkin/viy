@@ -1,3 +1,5 @@
+from .collate import DetectionBatch
+from .collate import DetectionCollator
 from .configs import DatasetSpecConfig
 from .configs import DetectionDatasetConfig
 from .configs import Stage
@@ -20,6 +22,8 @@ __all__ = [
     "IMAGENET_STD",
     "DatasetSpec",
     "DatasetSpecConfig",
+    "DetectionBatch",
+    "DetectionCollator",
     "DetectionDataset",
     "DetectionDatasetConfig",
     "DetectionSample",

@@ -12,7 +12,6 @@ from torch.utils.data import Dataset
 
 from viy.augs import AppliedOp
 from viy.augs import AugmentationPipeline
-from viy.augs import trace_to_json
 from viy.common import ImageArray
 from viy.layout import SampleRecord
 
@@ -26,14 +25,15 @@ class DetectionSample(TypedDict):
         label (int): ``0`` for real images, ``1`` for generated ones.
         source (str): ``<dataset>/<split>`` the image comes from.
         index (int): Row of the image in its split.
-        augmentations (str): JSON list of the applied augmentations with their levels.
+        augmentations (tuple[AppliedOp, ...]): Applied augmentations with their
+            levels in order; ``viy.augs.trace_to_json`` serializes them.
     """
 
     image: torch.Tensor
     label: int
     source: str
     index: int
-    augmentations: str
+    augmentations: tuple[AppliedOp, ...]
 
 
 class SplitDataset(Dataset[DetectionSample]):
@@ -108,7 +108,7 @@ class SplitDataset(Dataset[DetectionSample]):
             label=self.records[index].label,
             source=self.source,
             index=index,
-            augmentations=trace_to_json(trace),
+            augmentations=tuple(trace),
         )
 
     def _rng(self, index: int) -> np.random.Generator:

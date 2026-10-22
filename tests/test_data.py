@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import albumentations as A
@@ -9,10 +8,12 @@ from pydantic import ValidationError
 from torch.utils.data import DataLoader
 from transformers import ViTImageProcessorPil
 
+from viy.augs import AppliedOp
 from viy.augs import AugmentationPipeline
 from viy.augs import NTIREPresetStep
 from viy.augs import OpStep
 from viy.data import DatasetSpec
+from viy.data import DetectionCollator
 from viy.data import DetectionDataset
 from viy.data import DetectionDatasetConfig
 from viy.data import PreprocessingConfig
@@ -88,14 +89,21 @@ def test_train_dataset(storage: StorageConfig, ntire_raw: Path, mllm_raw: Path) 
     sample = train[0]
     assert sample["image"].shape == (3, 32, 32)
     assert sample["source"] == "ntire/shard_0"
-    trace = json.loads(sample["augmentations"])
-    assert all(set(op) == {"name", "scale"} for op in trace)
+    assert isinstance(sample["augmentations"], tuple)
+    assert all(isinstance(op, AppliedOp) for op in sample["augmentations"])
     assert len({train[1]["augmentations"] for _ in range(8)}) > 1
 
-    batch = next(iter(DataLoader(train, batch_size=4, shuffle=True)))
-    assert batch["image"].shape == (4, 3, 32, 32)
-    assert batch["label"].shape == (4,)
+    loader = DataLoader(
+        train, batch_size=4, shuffle=True, collate_fn=DetectionCollator()
+    )
+    batch = next(iter(loader))
+    assert batch["images"].shape == (4, 3, 32, 32)
+    assert batch["labels"].dtype == torch.int64
+    assert batch["labels"].shape == (4,)
+    assert batch["indices"].shape == (4,)
+    assert len(batch["sources"]) == 4
     assert len(batch["augmentations"]) == 4
+    assert all(isinstance(trace, tuple) for trace in batch["augmentations"])
 
 
 def test_val_dataset(storage: StorageConfig, ntire_raw: Path, mllm_raw: Path) -> None:
@@ -117,7 +125,11 @@ def test_val_dataset(storage: StorageConfig, ntire_raw: Path, mllm_raw: Path) ->
     first, second = parts["ntire/val"][2], parts["ntire/val"][2]
     assert first["augmentations"] == second["augmentations"]
     assert torch.equal(first["image"], second["image"])
-    loaders = {name: DataLoader(part, batch_size=4) for name, part in parts.items()}
+    loaders = {
+        name: DataLoader(part, batch_size=4, collate_fn=DetectionCollator())
+        for name, part in parts.items()
+    }
+    assert next(iter(loaders["ntire/val"]))["images"].shape == (4, 3, 32, 32)
     assert list(loaders) == list(parts)
     assert sum(len(part) for part in parts.values()) == 16
 
@@ -197,6 +209,19 @@ def test_check_disjoint(
         ValueError, match="appear in both the train and the val dataset"
     ):
         check_disjoint(train, val, leaky)
+
+
+def test_collator_rejects_mixed_shapes() -> None:
+    sample = {
+        "image": torch.zeros(3, 8, 8),
+        "label": 0,
+        "source": "a/b",
+        "index": 0,
+        "augmentations": (),
+    }
+    other = {**sample, "image": torch.zeros(3, 9, 8)}
+    with pytest.raises(ValueError, match="equal shapes"):
+        DetectionCollator()([sample, other])  # ty: ignore[invalid-argument-type]
 
 
 def _vit_processor() -> ViTImageProcessorPil:
