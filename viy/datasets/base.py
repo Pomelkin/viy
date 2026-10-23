@@ -19,11 +19,13 @@ from viy.layout import SampleRecord
 from viy.layout import check_split
 from viy.layout import default_link_mode
 from viy.layout import link_files
+from viy.progress import track
 from viy.registry import Registry
 
 from .configs import DatasetSourceConfig
 from .configs import StorageConfig
 from .hub import HubArtifact
+from .hub import check_access
 from .hub import fetch_artifact
 
 
@@ -83,9 +85,14 @@ class DatasetBuilder(ABC):
     """
     Converts one dataset of the supported pool into the canonical layout and reads it.
 
-    Concrete builders are registered by ``name`` on class creation. A builder
+    Concrete builders that define their own ``name`` are registered under it
+    on class creation, so shared intermediate classes stay unregistered. A builder
     only knows how to turn raw files into records in :meth:`collect`;
     downloading, linking, locking and sanity checks are shared.
+
+    A dataset with ``benchmark_only`` set, for example one whose license
+    allows evaluation only, is refused by training and validation datasets
+    and is used through benchmark tasks alone.
     """
 
     name: ClassVar[str]
@@ -94,10 +101,11 @@ class DatasetBuilder(ABC):
     split_groups: ClassVar[Mapping[str, tuple[str, ...]]] = MappingProxyType({})
     default_train_splits: ClassVar[tuple[str, ...]] = ()
     default_val_splits: ClassVar[tuple[str, ...]] = ()
+    benchmark_only: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        if not inspect.isabstract(cls):
+        if not inspect.isabstract(cls) and "name" in vars(cls):
             DATASETS.add(cls.name, cls)
         return
 
@@ -197,6 +205,45 @@ class DatasetBuilder(ABC):
         check_split(records, f"{self.name}/{split}", self.layout.dir, self.file_check)
         return records
 
+    def check_available(self, split: str) -> None:
+        """
+        Make sure ``split`` is prepared or can be prepared, without downloading it.
+
+        Checks the split name, ``auto_prepare``, the local copy for ``raw_path``
+        and for splits that are not on the Hub, and access to gated repositories.
+
+        Args:
+            split (str): Concrete split name.
+
+        Raises:
+            LayoutError: If the split is unknown or cannot be prepared.
+            PermissionError: If a gated repository needs a Hugging Face token.
+            huggingface_hub.errors.GatedRepoError: If access to a gated repository was not granted.
+        """
+        if self.layout.has_split(split):
+            return
+        spec = self._known_spec(split)
+        if not self.auto_prepare:
+            raise LayoutError(
+                f"Split '{self.name}/{split}' is not prepared in {self.layout.dir} and auto_prepare is off."
+            )
+        if self.raw_path is not None:
+            if not self.raw_path.is_dir():
+                raise LayoutError(
+                    f"Raw dataset directory does not exist: {self.raw_path}"
+                )
+            return
+        if spec.local_only:
+            raise LayoutError(
+                f"Split '{self.name}/{split}' is not published on the Hugging Face Hub; "
+                "set raw_path to a local copy of the dataset."
+            )
+        for repo_id in sorted(
+            {artifact.repo_id for artifact in spec.artifacts if artifact.gated}
+        ):
+            check_access(repo_id)
+        return
+
     def prepare(self, split: str) -> None:
         """
         Build ``split`` in the canonical layout unless it already exists.
@@ -209,6 +256,14 @@ class DatasetBuilder(ABC):
         """
         if self.layout.has_split(split):
             return
+        self.check_available(split)
+        spec = self._known_spec(split)
+        with self.layout.lock():
+            if not self.layout.has_split(split):
+                self._build(spec)
+        return
+
+    def _known_spec(self, split: str) -> SplitSpec:
         if split in self.split_groups:
             raise LayoutError(
                 f"'{split}' is a group of splits of '{self.name}': {list(self.split_groups[split])}. "
@@ -222,19 +277,14 @@ class DatasetBuilder(ABC):
             raise LayoutError(
                 f"Unknown split '{split}' of dataset '{self.name}'. Known splits: {', '.join(known)}."
             )
-        if not self.auto_prepare:
-            raise LayoutError(
-                f"Split '{self.name}/{split}' is not prepared in {self.layout.dir} and auto_prepare is off."
-            )
-        with self.layout.lock():
-            if not self.layout.has_split(split):
-                self._build(spec)
-        return
+        return spec
 
     def _build(self, spec: SplitSpec) -> None:
         raw_dir = self._materialize_raw(spec)
         logger.info(f"Preparing split '{self.name}/{spec.name}' from {raw_dir}")
-        samples = list(self.collect(spec, raw_dir))
+        samples = list(
+            track(self.collect(spec, raw_dir), f"Collecting {self.name}/{spec.name}")
+        )
         if len(samples) == 0:
             raise LayoutError(
                 f"No images found for split '{self.name}/{spec.name}' in {raw_dir}."
@@ -256,24 +306,20 @@ class DatasetBuilder(ABC):
 
     def _materialize_raw(self, spec: SplitSpec) -> Path:
         if self.raw_path is not None:
-            if not self.raw_path.is_dir():
-                raise LayoutError(
-                    f"Raw dataset directory does not exist: {self.raw_path}"
-                )
             return self.raw_path
-        if spec.local_only:
-            raise LayoutError(
-                f"Split '{self.name}/{spec.name}' is not published on the Hugging Face Hub; "
-                "set raw_path to a local copy of the dataset."
-            )
         for artifact in spec.artifacts:
-            fetch_artifact(artifact, self.layout.raw_dir)
+            if not artifact.streamed:
+                fetch_artifact(artifact, self.layout.raw_dir)
         return self.layout.raw_dir
 
     @abstractmethod
     def collect(self, spec: SplitSpec, raw_dir: Path) -> Iterator[RawSample]:
         """
         Yield the raw images of a split with their canonical records.
+
+        A builder that produces images itself, by decoding videos or Parquet
+        shards, writes them to their canonical location and yields that
+        location as the source.
 
         Args:
             spec (SplitSpec): Split to collect.

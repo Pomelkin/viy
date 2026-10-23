@@ -2,9 +2,17 @@ import shutil
 import zipfile
 from pathlib import Path
 
+import numpy as np
+import pyarrow.parquet as pq
 import pytest
+from PIL import Image
 
+from viy.datasets import DF26
 from viy.datasets import NTIRE
+from viy.datasets import OpenFakeV1
+from viy.datasets import OpenFakeV2
+from viy.datasets import df26
+from viy.datasets.openfake import V2_REVISION
 from viy.datasets import DatasetBuilder
 from viy.datasets import DatasetSourceConfig
 from viy.datasets import MLLMGenerated
@@ -118,8 +126,13 @@ def test_hub_download_extracts_archives(
     calls: list[str] = []
 
     def fake_snapshot_download(
-        repo_id: str, repo_type: str, allow_patterns: list[str], local_dir: Path
+        repo_id: str,
+        repo_type: str,
+        revision: str | None,
+        allow_patterns: list[str],
+        local_dir: Path,
     ) -> str:
+        assert revision is None
         assert repo_type == "dataset"
         calls.append(f"{repo_id}:{allow_patterns[0]}")
         for pattern in allow_patterns:
@@ -162,3 +175,142 @@ def test_default_storage_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     assert NTIRE().layout.dir == tmp_path / "custom" / "ntire"
     monkeypatch.delenv("VIY_ROOT")
     assert StorageConfig().root == Path.home() / ".cache" / "viy"
+
+
+def _parquet_images(path: Path) -> list[bytes]:
+    return [row["image"]["bytes"] for row in pq.read_table(path).to_pylist()]
+
+
+def test_openfake_v2(openfake_v2_raw: Path, storage: StorageConfig) -> None:
+    builder = OpenFakeV2(raw_path=openfake_v2_raw, storage=storage)
+    train = builder.load("train")
+    assert len(train) == 8
+    assert train[0].image == "images/train/train-00000-of-00002/000000.jpg"
+    assert train[1].image.endswith("/000001.png")
+    assert train[4].image == "images/train/train-00001-of-00002/000000.jpg"
+    source = _parquet_images(openfake_v2_raw / "core" / "train-00000-of-00002.parquet")
+    assert builder.layout.image_path(train[1]).read_bytes() == source[1]
+    assert not builder.layout.image_path(train[0]).is_symlink()
+
+    real, fake = train[0], train[1]
+    assert (real.label, real.generator) == (0, None)
+    assert real.extra == {
+        "type": "real",
+        "row_id": "openfake-t0",
+        "image_sha256": "sha-t0",
+        "real_source": "laion",
+    }
+    assert (fake.label, fake.generator) == (1, "gen-1")
+    assert fake.extra["release_date"] == "2025-01"
+    assert fake.distortions is None
+
+    reddit = builder.load("reddit")
+    assert [record.generator for record in reddit] == [None] * 4
+    assert builder.expand_splits(["train"]) == ["train"]
+    assert (
+        builder.layout.dir / "converted" / "train" / "train-00001-of-00002.csv"
+    ).is_file()
+    assert (openfake_v2_raw / "core" / "train-00000-of-00002.parquet").is_file()
+
+
+def test_openfake_v1(openfake_v1_raw: Path, storage: StorageConfig) -> None:
+    builder = OpenFakeV1(raw_path=openfake_v1_raw, storage=storage)
+    test = builder.load("test")
+    assert len(test) == 4
+    assert "row_id" not in test[0].extra
+    assert test[1].generator == "gen-1"
+    assert len(builder.load("train")) == 6
+
+
+def test_openfake_streams_shards(
+    openfake_v2_raw: Path, storage: StorageConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    downloads: list[str] = []
+
+    class FakeApi:
+        def list_repo_files(
+            self, repo_id: str, repo_type: str, revision: str | None
+        ) -> list[str]:
+            assert (repo_id, repo_type, revision) == (
+                "ComplexDataLab/OpenFake",
+                "dataset",
+                V2_REVISION,
+            )
+            return [
+                path.relative_to(openfake_v2_raw).as_posix()
+                for path in openfake_v2_raw.rglob("*.parquet")
+            ]
+
+    def fake_download(
+        repo_id: str, path: str, repo_type: str, revision: str | None, local_dir: Path
+    ) -> str:
+        downloads.append(path)
+        target = Path(local_dir) / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(openfake_v2_raw / path, target)
+        return str(target)
+
+    monkeypatch.setattr(hub, "HfApi", FakeApi)
+    monkeypatch.setattr(hub, "hf_hub_download", fake_download)
+    builder = OpenFakeV2(storage=storage)
+    assert len(builder.load("train")) == 8
+    assert downloads == [
+        "core/train-00000-of-00002.parquet",
+        "core/train-00001-of-00002.parquet",
+    ]
+    assert list(builder.layout.raw_dir.rglob("*.parquet")) == []
+
+    builder.layout.split_path("train").unlink()
+    monkeypatch.setattr(hub, "hf_hub_download", None)
+    assert len(builder.load("train")) == 8
+
+
+def test_df26(
+    df26_raw: Path, storage: StorageConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builder = DF26(raw_path=df26_raw, storage=storage)
+    records = builder.load("test")
+    assert len(records) == 5 * 4
+    assert [record.image for record in records[:4]] == [
+        f"images/real/Studio_Interview/c1/frame_{index:04d}.png"
+        for index in (3, 6, 9, 12)
+    ]
+    veo = records[4]
+    assert (veo.label, veo.generator, veo.source_id) == (1, "Veo_3.1", "c1")
+    assert veo.extra == {
+        "scenario": "Studio_Interview",
+        "video": "fake/Studio_Interview/Veo_3.1/c1.mp4",
+        "frame": "3",
+        "access": "closed",
+        "conditioning": "image-to-video",
+    }
+    assert records[0].generator is None
+    frame = np.asarray(Image.open(builder.layout.image_path(records[0])))
+    assert frame.shape == (24, 32, 3)
+
+    builder.layout.split_path("test").unlink()
+    monkeypatch.setattr(df26, "read_frames", None)
+    assert builder.load("test") == records
+
+
+def test_gated_access_check(
+    storage: StorageConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checked: list[str] = []
+
+    class FakeApi:
+        def auth_check(self, repo_id: str, repo_type: str) -> None:
+            checked.append(f"{repo_type}:{repo_id}")
+
+    monkeypatch.setattr(hub, "HfApi", FakeApi)
+    monkeypatch.setattr(hub, "get_token", lambda: None)
+    with pytest.raises(PermissionError, match="request access|Request access"):
+        DF26(storage=storage).prepare("test")
+    assert checked == []
+
+    monkeypatch.setattr(hub, "get_token", lambda: "token")
+    DF26(storage=storage).check_available("test")
+    NTIRE(storage=storage).check_available("val")
+    assert checked == ["dataset:DF26/DF26"]
+    with pytest.raises(LayoutError, match="not published on the Hugging Face Hub"):
+        NTIRE(storage=storage).check_available("test_private")
