@@ -2,6 +2,7 @@ import csv
 import re
 import time
 from collections.abc import Callable
+from collections.abc import Mapping
 from collections.abc import Sequence
 from pathlib import Path
 from typing import override
@@ -10,22 +11,27 @@ import numpy as np
 import torch
 from kostyl import StrictPydanticBaseModel
 from kostyl.utils import setup_logger
-from kostyl.utils import tqdm
 from PIL import Image
 from pydantic import Field
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 
+from viy.data import derive_split
+from viy.datasets import DATASETS
 from viy.datasets import DatasetBuilder
-from viy.datasets import DatasetSourceConfig
 from viy.datasets import StorageConfig
 from viy.layout import SampleRecord
+from viy.progress import track
 
+from .metrics import DEFAULT_METRICS
+from .metrics import METRICS
 from .metrics import Scores
 from .model import DetectorModel
+from .model import ModelConfig
 from .model import ModelMeta
 from .results import TaskResult
 from .task import DetectionTask
+from .task import TaskMetadata
 from .task import get_tasks
 
 
@@ -39,9 +45,14 @@ class BenchmarkConfig(StrictPydanticBaseModel):
     Attributes:
         storage (StorageConfig): Canonical layout location and preparation settings.
         output_dir (Path): Directory results are written to, one folder per model.
-        tasks (list[str] | None): Task or dataset names; ``None`` runs every task.
-        sources (list[DatasetSourceConfig]): Local raw copies of datasets; datasets
+        tasks (list[str]): Built-in or registered task or dataset names, e.g.
+            ``ntire/val`` or ``ntire``; ``[]`` runs only ``custom_tasks``.
+        custom_tasks (list[TaskMetadata]): Tasks defined in the config, run after
+            the selected ones, e.g. augmented copies of a split.
+        raw_paths (dict[str, Path]): Local raw copies by dataset name; datasets
             not listed are downloaded from the Hub.
+        metrics (list[str]): Metrics of the pool computed on every slice; see
+            ``viy bench metrics``. Each task's main score is added.
         batch_size (int): Inference batch size.
         num_workers (int): DataLoader workers decoding and preprocessing images.
         overwrite (bool): Recompute tasks that already have results.
@@ -49,11 +60,29 @@ class BenchmarkConfig(StrictPydanticBaseModel):
 
     storage: StorageConfig = Field(default_factory=StorageConfig)
     output_dir: Path
-    tasks: list[str] | None = None
-    sources: list[DatasetSourceConfig] = Field(default_factory=list)
+    tasks: list[str]
+    custom_tasks: list[TaskMetadata] = Field(default_factory=list)
+    raw_paths: dict[str, Path] = Field(default_factory=dict)
+    metrics: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_METRICS), min_length=1
+    )
     batch_size: int = Field(default=64, gt=0)
     num_workers: int = Field(default=8, ge=0)
     overwrite: bool = False
+
+
+class BenchmarkRunConfig(BenchmarkConfig):
+    """
+    A benchmark run of one detector, as read by ``viy bench run``.
+
+    Attributes:
+        model (ModelConfig): Detector to evaluate.
+        imports (list[str]): Modules imported before the run, e.g. ones that
+            register datasets, tasks or metrics.
+    """
+
+    model: ModelConfig
+    imports: list[str] = Field(default_factory=list)
 
 
 class _InferenceDataset(Dataset[tuple[torch.Tensor, int]]):
@@ -79,23 +108,23 @@ class Benchmark:
 
     Tasks with an existing result are loaded instead of recomputed unless
     ``overwrite`` is set, so an interrupted run continues where it stopped.
-    Per-image scores are stored next to every result for later analysis.
+    Per-image scores are stored next to every result. When a stored result
+    lacks a selected metric, the metrics are recomputed from these scores
+    without running the model.
 
     Example:
-        >>> benchmark = Benchmark(
-        ...     tasks=get_tasks(["ntire"]),
-        ...     output_dir=Path("results"),
-        ... )
+        >>> benchmark = Benchmark(["ntire/val", "ntire/test_public"], output_dir="results")
         >>> results = benchmark.run(MyDetector())
         >>> print(results_table(results))
     """
 
     def __init__(
         self,
-        tasks: Sequence[DetectionTask],
-        output_dir: Path,
+        tasks: str | Sequence[str | TaskMetadata | DetectionTask],
+        output_dir: Path | str,
         storage: StorageConfig | None = None,
-        sources: Sequence[DatasetSourceConfig] = (),
+        raw_paths: Mapping[str, Path | str] | None = None,
+        metrics: str | Sequence[str] = DEFAULT_METRICS,
         batch_size: int = 64,
         num_workers: int = 8,
         overwrite: bool = False,
@@ -104,21 +133,36 @@ class Benchmark:
         Initialize the benchmark.
 
         Args:
-            tasks (Sequence[DetectionTask]): Tasks to run in order.
-            output_dir (Path): Directory results are written to.
+            tasks (str | Sequence[str | TaskMetadata | DetectionTask]): Tasks to run
+                in order: task or dataset names as for :func:`get_tasks`, task
+                descriptions or tasks. Task names must be unique.
+            output_dir (Path | str): Directory results are written to.
             storage (StorageConfig | None): Canonical layout location and preparation
                 settings; ``None`` uses the defaults.
-            sources (Sequence[DatasetSourceConfig]): Local raw copies of datasets.
+            raw_paths (Mapping[str, Path | str] | None): Local raw copies by
+                dataset name; other datasets are downloaded from the Hub.
+            metrics (str | Sequence[str]): Metrics of the pool computed on every
+                slice, see ``viy bench metrics``.
             batch_size (int): Inference batch size.
             num_workers (int): DataLoader workers decoding and preprocessing images.
             overwrite (bool): Recompute tasks that already have results.
         """
-        if len(tasks) == 0:
+        self.tasks = _resolve_tasks(tasks)
+        if len(self.tasks) == 0:
             raise ValueError("A benchmark needs at least one task.")
-        self.tasks = list(tasks)
+        names = [task.name for task in self.tasks]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"Task names must be unique: {duplicates}.")
+        for task in self.tasks:
+            METRICS.get(task.metadata.main_score)
         self.storage = StorageConfig() if storage is None else storage
         self.output_dir = Path(output_dir)
-        self.sources = {source.name: source for source in sources}
+        self.raw_paths = {name: Path(path) for name, path in (raw_paths or {}).items()}
+        self.metrics = [
+            METRICS.get(name).name
+            for name in ([metrics] if isinstance(metrics, str) else metrics)
+        ]
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.overwrite = overwrite
@@ -128,10 +172,11 @@ class Benchmark:
     def from_pydantic_model(cls, config: BenchmarkConfig) -> "Benchmark":
         """Build the benchmark from its configuration."""
         return cls(
-            tasks=get_tasks(config.tasks),
+            tasks=[*config.tasks, *config.custom_tasks],
             storage=config.storage,
             output_dir=config.output_dir,
-            sources=config.sources,
+            raw_paths=config.raw_paths,
+            metrics=config.metrics,
             batch_size=config.batch_size,
             num_workers=config.num_workers,
             overwrite=config.overwrite,
@@ -141,12 +186,25 @@ class Benchmark:
         """
         Evaluate ``model`` on every task.
 
+        Before any inference, every task without a stored result is checked
+        for available data, so a missing local copy or gated access fails the
+        run at once instead of after hours of evaluation.
+
         Args:
             model (DetectorModel): Detector to evaluate.
 
         Returns:
             list[TaskResult]: Results in task order.
         """
+        if model.meta.revision is None:
+            logger.warning(
+                f"Model '{model.meta.name}' has no revision, so its results are reused "
+                "for any later version of it; set ModelMeta.revision to keep them apart."
+            )
+        for task in self.tasks:
+            if self.overwrite or not self.result_path(model.meta, task).is_file():
+                builder = self._builder(task.metadata.dataset)
+                builder.check_available(task.metadata.split)
         results = []
         for task in self.tasks:
             path = self.result_path(model.meta, task)
@@ -154,7 +212,11 @@ class Benchmark:
                 logger.info(
                     f"Task '{task.name}' already evaluated for '{model.meta.name}', loading {path}"
                 )
-                results.append(TaskResult.load(path))
+                stored = _load_matching(path, task)
+                missing = set(self.metrics) - set(stored.slices["all"].metrics)
+                results.append(
+                    self._rescore(model, task, path, stored) if missing else stored
+                )
                 continue
             results.append(self._run_task(model, task, path))
         return results
@@ -179,13 +241,23 @@ class Benchmark:
                 "has no evaluation split; skip it for models trained on this dataset."
             )
         builder = self._builder(task.metadata.dataset)
-        records = builder.load(task.metadata.split)
+        split = task.metadata.split
+        if task.metadata.derivation is not None:
+            split = derive_split(
+                builder, split, task.metadata.derivation, self.num_workers
+            )
+        records = builder.load(split)
         started = time.perf_counter()
         scores = self._predict(
             model, [builder.layout.image_path(record) for record in records], task.name
         )
         result = task.evaluate(
-            records, scores, model.threshold, model.meta, time.perf_counter() - started
+            records,
+            scores,
+            model.threshold,
+            model.meta,
+            time.perf_counter() - started,
+            self.metrics,
         )
         result.save(path)
         _write_predictions(path.with_suffix(".predictions.csv"), records, scores)
@@ -194,9 +266,30 @@ class Benchmark:
         )
         return result
 
+    def _rescore(
+        self, model: DetectorModel, task: DetectionTask, path: Path, stored: TaskResult
+    ) -> TaskResult:
+        logger.info(
+            f"Task '{task.name}': computing {self.metrics} from the stored predictions"
+        )
+        builder = self._builder(task.metadata.dataset)
+        records = builder.load(stored.derived_split or stored.split)
+        scores = _read_predictions(path.with_suffix(".predictions.csv"), records)
+        result = task.evaluate(
+            records,
+            scores,
+            model.threshold,
+            model.meta,
+            stored.evaluation_seconds,
+            self.metrics,
+        )
+        result.save(path)
+        return result
+
     def _builder(self, dataset: str) -> DatasetBuilder:
-        source = self.sources.get(dataset, DatasetSourceConfig(name=dataset))
-        return DatasetBuilder.from_pydantic_model(source, self.storage)
+        return DATASETS.get(dataset)(
+            raw_path=self.raw_paths.get(dataset), storage=self.storage
+        )
 
     def _predict(
         self, model: DetectorModel, paths: Sequence[Path], task_name: str
@@ -208,8 +301,9 @@ class Benchmark:
             shuffle=False,
         )
         scores = np.full(len(paths), np.nan, dtype=np.float64)
+        batches = iter(loader)
         with torch.inference_mode():
-            for images, indices in tqdm(loader, desc=task_name):
+            for images, indices in track(batches, task_name, total=len(loader)):
                 values = (
                     model.predict(images).detach().float().reshape(-1).cpu().numpy()
                 )
@@ -228,6 +322,44 @@ class Benchmark:
                 "threshold metrics assume probabilities."
             )
         return scores
+
+
+def _resolve_tasks(
+    tasks: str | Sequence[str | TaskMetadata | DetectionTask],
+) -> list[DetectionTask]:
+    resolved: list[DetectionTask] = []
+    for task in [tasks] if isinstance(tasks, str) else tasks:
+        match task:
+            case str():
+                resolved.extend(get_tasks(task))
+            case TaskMetadata():
+                resolved.append(DetectionTask(task))
+            case DetectionTask():
+                resolved.append(task)
+    return resolved
+
+
+def _load_matching(path: Path, task: DetectionTask) -> TaskResult:
+    result = TaskResult.load(path)
+    stored = result.derived_split or result.split
+    expected = task.metadata.derived_split or task.metadata.split
+    if stored != expected:
+        raise ValueError(
+            f"{path} holds a result on split '{stored}', but task '{task.name}' now "
+            f"evaluates '{expected}'. Rename the task or set overwrite=True."
+        )
+    return result
+
+
+def _read_predictions(path: Path, records: Sequence[SampleRecord]) -> Scores:
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    if [row["image"] for row in rows] != [record.image for record in records]:
+        raise ValueError(
+            f"{path} does not list the images of the split in order; set overwrite=True "
+            "to run the model again."
+        )
+    return np.asarray([float(row["score"]) for row in rows], dtype=np.float64)
 
 
 def _safe(name: str) -> str:
