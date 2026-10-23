@@ -7,6 +7,9 @@ import pyarrow.parquet as pq
 import pytest
 from PIL import Image
 
+from viy.data import DatasetSpec
+from viy.data import DetectionDataset
+from viy.data import Preprocessor
 from viy.datasets import DF26
 from viy.datasets import NTIRE
 from viy.datasets import OpenFakeV1
@@ -291,6 +294,16 @@ def test_df26(
     builder.layout.split_path("test").unlink()
     monkeypatch.setattr(df26, "read_frames", None)
     assert builder.load("test") == records
+
+
+def test_df26_is_benchmark_only(df26_raw: Path, storage: StorageConfig) -> None:
+    with pytest.raises(ValueError, match="benchmarking only"):
+        DetectionDataset(
+            [DatasetSpec("df26", raw_path=df26_raw)],
+            stage="val",
+            preprocessor=Preprocessor(image_size=16),
+            storage=storage,
+        )
 
 
 def test_gated_access_check(

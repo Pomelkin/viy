@@ -116,7 +116,7 @@ class Preprocessor:
 
     Example:
         >>> Preprocessor(image_size=256, resize_mode="resize_center_crop")
-        >>> Preprocessor(image_processor=AutoImageProcessor.from_pretrained("facebook/dinov2-small"))
+        >>> Preprocessor(image_processor="facebook/dinov2-small")
     """
 
     def __init__(
@@ -127,7 +127,7 @@ class Preprocessor:
         interpolation: Interpolation | str | None = None,
         mean: RGB | None = None,
         std: RGB | None = None,
-        image_processor: BaseImageProcessor | None = None,
+        image_processor: BaseImageProcessor | str | None = None,
     ) -> None:
         """
         Initialize the preprocessor.
@@ -141,8 +141,9 @@ class Preprocessor:
             mean (RGB | None): Per-channel mean on the ``[0, 1]`` scale; defaults to ImageNet.
             std (RGB | None): Per-channel standard deviation on the ``[0, 1]`` scale;
                 defaults to ImageNet.
-            image_processor (BaseImageProcessor | None): Transformers image processor
-                used instead of all custom settings.
+            image_processor (BaseImageProcessor | str | None): Transformers image
+                processor used instead of all custom settings, or its Hub name or
+                local path, loaded with ``AutoImageProcessor.from_pretrained``.
         """
         custom = (resize_mode, crop_padding, interpolation, mean, std)
         self._transform: Callable[[Image.Image], torch.Tensor]
@@ -151,7 +152,7 @@ class Preprocessor:
                 raise ValueError(
                     "Pass either custom preprocessing settings or image_processor, not both."
                 )
-            self._transform = _ImageProcessorTransform(image_processor)
+            self._transform = _ImageProcessorTransform(_load_processor(image_processor))
         elif image_size is None:
             raise ValueError(
                 "Pass image_size for custom preprocessing, or image_processor."
@@ -173,12 +174,7 @@ class Preprocessor:
     def from_pydantic_model(cls, config: PreprocessingConfig) -> "Preprocessor":
         """Build the preprocessor from its configuration."""
         if config.image_processor is not None:
-            processor = AutoImageProcessor.from_pretrained(config.image_processor)
-            if not isinstance(processor, BaseImageProcessor):
-                raise TypeError(
-                    f"'{config.image_processor}' is not an image processor."
-                )
-            return cls(image_processor=processor)
+            return cls(image_processor=config.image_processor)
         return cls(
             image_size=config.image_size,
             resize_mode=config.resize_mode,
@@ -264,3 +260,12 @@ def _center_crop(image: Image.Image, size: int) -> Image.Image:
     left = (width - size) // 2
     top = (height - size) // 2
     return image.crop((left, top, left + size, top + size))
+
+
+def _load_processor(processor: BaseImageProcessor | str) -> BaseImageProcessor:
+    if isinstance(processor, BaseImageProcessor):
+        return processor
+    loaded = AutoImageProcessor.from_pretrained(processor)
+    if not isinstance(loaded, BaseImageProcessor):
+        raise TypeError(f"'{processor}' is not an image processor.")
+    return loaded

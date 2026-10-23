@@ -4,11 +4,13 @@ import albumentations as A
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 from pydantic import ValidationError
 from torch.utils.data import DataLoader
 from transformers import ViTImageProcessorPil
 
 from viy.augs import AppliedOp
+from viy.augs import AugmentationConfig
 from viy.augs import AugmentationPipeline
 from viy.augs import NTIREPresetStep
 from viy.augs import OpStep
@@ -22,6 +24,7 @@ from viy.data import ResizeMode
 from viy.data import Stage
 from viy.data import check_disjoint
 from viy.data import subsample
+from viy.datasets import NTIRE
 from viy.datasets import StorageConfig
 from viy.layout import SampleRecord
 
@@ -149,7 +152,7 @@ def test_from_pydantic_model(
                 {"name": "mllm_generated", "raw_path": str(mllm_raw)},
             ],
             "stage": "train",
-            "preprocessing": {"image_size": 32},
+            "preprocessor": {"image_size": 32},
             "augmentation": {
                 "steps": [
                     {"kind": "albumentations", "transform": "HorizontalFlip", "p": 0.5}
@@ -249,3 +252,89 @@ def test_preprocessor_with_image_processor(tmp_path: Path) -> None:
         PreprocessingConfig(image_size=24, image_processor="facebook/dinov2-small")
     with pytest.raises(ValidationError, match="image_size"):
         PreprocessingConfig()
+
+
+def test_ranks_draw_different_augmentations(
+    storage: StorageConfig,
+    ntire_raw: Path,
+    mllm_raw: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def traces(rank: int) -> list[tuple[AppliedOp, ...]]:
+        monkeypatch.setattr("viy.data.dataset._process_rank", lambda: rank)
+        torch.manual_seed(0)
+        part = _train(storage, ntire_raw, mllm_raw).parts[-1]
+        return [part[index]["augmentations"] for index in range(len(part))]
+
+    assert traces(0) == traces(0)
+    assert traces(0) != traces(1)
+
+
+def test_convenient_inputs_and_loaders(
+    storage: StorageConfig, ntire_raw: Path, mllm_raw: Path
+) -> None:
+    seen: list[type] = []
+
+    def preprocess(image: Image.Image) -> torch.Tensor:
+        seen.append(type(image))
+        return Preprocessor(image_size=16)(image)
+
+    train = DetectionDataset(
+        [DatasetSpec("ntire", splits="shard_0", raw_path=ntire_raw)],
+        stage="train",
+        preprocessor=preprocess,
+        augmentation=[A.HorizontalFlip(p=0.5), OpStep("jpeg", p=0.5)],
+        storage=storage,
+        seed=5,
+    )
+    assert train.sources == ["ntire/shard_0"]
+    first = [batch["paths"] for batch in train.dataloader(batch_size=2)]
+    second = [batch["paths"] for batch in train.dataloader(batch_size=2)]
+    assert first == second
+    assert sorted(path for paths in first for path in paths) == sorted(
+        record.image for record in train.parts[0].records
+    )
+    assert seen and all(issubclass(kind, Image.Image) for kind in seen)
+
+    for split in ("val", "val_hard"):
+        NTIRE(raw_path=ntire_raw, storage=storage).prepare(split)
+    val = DetectionDataset(
+        "ntire",
+        stage="val",
+        preprocessor=Preprocessor(image_size=16),
+        augmentation=AugmentationConfig.model_validate(
+            {"steps": [{"kind": "op", "op": "jpeg"}]}
+        ),
+        storage=storage,
+    )
+    loaders = val.dataloaders(batch_size=4)
+    assert list(loaders) == ["ntire/val", "ntire/val_hard"]
+    batch = next(iter(loaders["ntire/val"]))
+    record = val.record(batch["sources"][1], int(batch["indices"][1]))
+    assert record.image == batch["paths"][1]
+
+
+def test_preprocessor_loads_processor_by_name(tmp_path: Path) -> None:
+    _vit_processor().save_pretrained(tmp_path / "processor")
+    tensor = Preprocessor(image_processor=str(tmp_path / "processor"))(
+        np.zeros((8, 8, 3), np.uint8)
+    )
+    assert tensor.shape == (3, 24, 24)
+
+
+def test_seed_alone_reproduces_training_batches(
+    storage: StorageConfig, ntire_raw: Path
+) -> None:
+    def batches(torch_seed: int) -> list[list[tuple[AppliedOp, ...]]]:
+        torch.manual_seed(torch_seed)
+        dataset = DetectionDataset(
+            DatasetSpec("ntire", splits="shard_1", raw_path=ntire_raw),
+            stage="train",
+            preprocessor=Preprocessor(image_size=8),
+            augmentation=[OpStep("jpeg", p=0.5), OpStep("brighten", p=0.5)],
+            storage=storage,
+            seed=11,
+        )
+        return [batch["augmentations"] for batch in dataset.dataloader(batch_size=2)]
+
+    assert batches(1) == batches(2)

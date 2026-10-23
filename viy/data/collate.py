@@ -16,7 +16,9 @@ class DetectionBatch(TypedDict):
         images (torch.Tensor): Preprocessed images of shape ``(B, 3, H, W)``.
         labels (torch.Tensor): ``int64`` labels of shape ``(B,)``, ``0`` real and ``1`` generated.
         sources (list[str]): ``<dataset>/<split>`` of every image.
-        indices (torch.Tensor): ``int64`` row of every image in its split, shape ``(B,)``.
+        indices (torch.Tensor): ``int64`` position of every record in its
+            ``SplitDataset.records``, shape ``(B,)``.
+        paths (list[str]): Image path of every sample relative to its dataset directory.
         augmentations (list[tuple[AppliedOp, ...]]): Applied augmentations of every image.
     """
 
@@ -24,6 +26,7 @@ class DetectionBatch(TypedDict):
     labels: torch.Tensor
     sources: list[str]
     indices: torch.Tensor
+    paths: list[str]
     augmentations: list[tuple[AppliedOp, ...]]
 
 
@@ -31,9 +34,9 @@ class DetectionCollator:
     """
     Collates :class:`DetectionSample` items into a :class:`DetectionBatch`.
 
-    Pass an instance as ``collate_fn`` of a DataLoader over a detection dataset.
-    Augmentation traces have different lengths, so the default collate function
-    of PyTorch cannot batch them.
+    ``DetectionDataset.dataloader`` sets it up. For a DataLoader of your own,
+    pass an instance as ``collate_fn``: augmentation traces have different
+    lengths, so the default collate function of PyTorch cannot batch them.
 
     Example:
         >>> loader = DataLoader(train, batch_size=64, collate_fn=DetectionCollator())
@@ -69,5 +72,6 @@ class DetectionCollator:
             indices=torch.tensor(
                 [sample["index"] for sample in samples], dtype=torch.int64
             ),
+            paths=[sample["path"] for sample in samples],
             augmentations=[sample["augmentations"] for sample in samples],
         )

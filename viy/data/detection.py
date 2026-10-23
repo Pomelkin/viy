@@ -3,16 +3,25 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
+from typing import Any
 
 import torch
 from kostyl.utils import setup_logger
+from PIL import Image
 from torch.utils.data import ConcatDataset
+from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
 
+from viy.augs import AlbumentationsTransform
+from viy.augs import AugmentationConfig
 from viy.augs import AugmentationPipeline
-from viy.common import ImageArray
+from viy.augs import Step
 from viy.datasets import DATASETS
 from viy.datasets import StorageConfig
+from viy.layout import SampleRecord
+from viy.progress import track
 
+from .collate import DetectionCollator
 from .configs import DatasetSpecConfig
 from .configs import DetectionDatasetConfig
 from .configs import Stage
@@ -24,6 +33,11 @@ from .sampling import subsample
 
 logger = setup_logger(fmt="detailed")
 
+type Augmentation = (
+    AugmentationPipeline | AugmentationConfig | Sequence[Step | AlbumentationsTransform]
+)
+"""A pipeline, its config, or a list of steps and albumentations transforms."""
+
 
 @dataclass(frozen=True, slots=True)
 class DatasetSpec:
@@ -32,8 +46,8 @@ class DatasetSpec:
 
     Attributes:
         name (str): Registered dataset name, e.g. ``ntire``.
-        splits (Sequence[str] | None): Splits or split groups; ``None`` uses the
-            dataset defaults for the stage.
+        splits (str | Sequence[str] | None): Split, split group or a list of
+            them; ``None`` uses the dataset defaults for the stage.
         limit (int | None): Maximum number of images taken from every split,
             drawn with class stratification.
         raw_path (Path | str | None): Local copy of the raw dataset; ``None``
@@ -41,9 +55,14 @@ class DatasetSpec:
     """
 
     name: str
-    splits: Sequence[str] | None = None
+    splits: str | Sequence[str] | None = None
     limit: int | None = None
     raw_path: Path | str | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.splits, str):
+            object.__setattr__(self, "splits", (self.splits,))
+        return
 
     @classmethod
     def from_pydantic_model(cls, config: DatasetSpecConfig) -> "DatasetSpec":
@@ -82,10 +101,10 @@ class DetectionDataset(ConcatDataset[DetectionSample]):
 
     def __init__(
         self,
-        datasets: Sequence[DatasetSpec],
+        datasets: str | DatasetSpec | Sequence[str | DatasetSpec],
         stage: Stage | str,
-        preprocessor: Callable[[ImageArray], torch.Tensor],
-        augmentation: AugmentationPipeline | None = None,
+        preprocessor: Callable[[Image.Image], torch.Tensor],
+        augmentation: Augmentation | None = None,
         storage: StorageConfig | None = None,
         seed: int = 0,
     ) -> None:
@@ -93,25 +112,39 @@ class DetectionDataset(ConcatDataset[DetectionSample]):
         Prepare, load and check every split of the requested datasets.
 
         Args:
-            datasets (Sequence[DatasetSpec]): Datasets to combine.
+            datasets (str | DatasetSpec | Sequence[str | DatasetSpec]): Datasets to
+                combine; a name stands for the dataset with its default splits.
             stage (Stage | str): ``train`` or ``val``.
-            preprocessor (Callable[[ImageArray], torch.Tensor]): Converts an augmented
-                ``uint8`` RGB image into a model input, e.g. a :class:`Preprocessor`.
-            augmentation (AugmentationPipeline | None): Augmentation applied before preprocessing.
+            preprocessor (Callable[[Image.Image], torch.Tensor]): Converts an augmented
+                RGB image into a model input, e.g. a :class:`Preprocessor` or the
+                ``preprocess`` method of a benchmarked ``DetectorModel``.
+            augmentation (Augmentation | None): Augmentation applied before
+                preprocessing: a pipeline, its config, or a list of steps and
+                albumentations transforms.
             storage (StorageConfig | None): Canonical layout location and preparation
                 settings; ``None`` uses the defaults.
-            seed (int): Seed for subsampling and augmentation.
+            seed (int): Seed of subsampling, augmentation and of the shuffling of
+                :meth:`dataloader`.
         """
         self.stage = Stage(stage)
         self.storage = StorageConfig() if storage is None else storage
+        self.seed = seed
+        specs = [
+            DatasetSpec(spec) if isinstance(spec, str) else spec
+            for spec in (
+                [datasets] if isinstance(datasets, str | DatasetSpec) else datasets
+            )
+        ]
+        pipeline = _pipeline(augmentation)
         self.parts = [
             part
-            for spec in datasets
-            for part in self._parts(spec, preprocessor, augmentation, seed)
+            for spec in specs
+            for part in self._parts(spec, preprocessor, pipeline, seed)
         ]
         if not self.parts:
             raise ValueError(
-                f"None of the datasets {[spec.name for spec in datasets]} has {self.stage} splits."
+                f"None of the datasets {[spec.name for spec in specs]} has {self.stage} splits; "
+                "list the splits to use with DatasetSpec(name, splits=[...])."
             )
         duplicates = sorted(
             {source for source in self.sources if self.sources.count(source) > 1}
@@ -137,7 +170,7 @@ class DetectionDataset(ConcatDataset[DetectionSample]):
                 DatasetSpec.from_pydantic_model(spec) for spec in config.datasets
             ],
             stage=config.stage,
-            preprocessor=Preprocessor.from_pydantic_model(config.preprocessing),
+            preprocessor=Preprocessor.from_pydantic_model(config.preprocessor),
             augmentation=augmentation,
             storage=config.storage,
             seed=config.seed,
@@ -157,14 +190,66 @@ class DetectionDataset(ConcatDataset[DetectionSample]):
         """One dataset per split, keyed by ``<dataset>/<split>``."""
         return {part.source: part for part in self.parts}
 
+    def record(self, source: str, index: int) -> SampleRecord:
+        """Record of a sample from its ``source`` and ``index``, e.g. taken from a batch."""
+        return self.by_source()[source].records[index]
+
+    def dataloader(
+        self, batch_size: int, shuffle: bool | None = None, **kwargs: Any
+    ) -> DataLoader[DetectionSample]:
+        """
+        A DataLoader over the whole dataset that yields :class:`DetectionBatch` items.
+
+        Training data is shuffled by default, with a generator seeded from
+        ``seed``, so ``seed`` alone reproduces the order and the augmentation.
+
+        Args:
+            batch_size (int): Batch size.
+            shuffle (bool | None): Shuffle the samples; ``None`` shuffles at the
+                training stage only.
+            **kwargs (Any): Other DataLoader arguments, e.g. ``num_workers``.
+
+        Returns:
+            DataLoader[DetectionSample]: The loader.
+        """
+        if shuffle is None:
+            shuffle = self.stage is Stage.TRAIN
+        return _loader(self, batch_size, shuffle=shuffle, seed=self.seed, kwargs=kwargs)
+
+    def dataloaders(
+        self, batch_size: int, **kwargs: Any
+    ) -> dict[str, DataLoader[DetectionSample]]:
+        """
+        One unshuffled DataLoader per split, keyed by ``<dataset>/<split>``, for validation.
+
+        Args:
+            batch_size (int): Batch size.
+            **kwargs (Any): Other DataLoader arguments, e.g. ``num_workers``.
+
+        Returns:
+            dict[str, DataLoader[DetectionSample]]: Loaders in the order of :attr:`sources`.
+        """
+        return {
+            part.source: _loader(
+                part, batch_size, shuffle=False, seed=self.seed, kwargs=kwargs
+            )
+            for part in self.parts
+        }
+
     def _parts(
         self,
         spec: DatasetSpec,
-        preprocessor: Callable[[ImageArray], torch.Tensor],
+        preprocessor: Callable[[Image.Image], torch.Tensor],
         augmentation: AugmentationPipeline | None,
         seed: int,
     ) -> list[SplitDataset]:
-        builder = DATASETS.get(spec.name)(raw_path=spec.raw_path, storage=self.storage)
+        builder_cls = DATASETS.get(spec.name)
+        if builder_cls.benchmark_only:
+            raise ValueError(
+                f"Dataset '{spec.name}' is for benchmarking only; evaluate it with viy.bench "
+                "instead of training or validating on it."
+            )
+        builder = builder_cls(raw_path=spec.raw_path, storage=self.storage)
         defaults = (
             builder.default_train_splits
             if self.stage is Stage.TRAIN
@@ -220,8 +305,43 @@ def check_disjoint(*datasets: DetectionDataset) -> None:
 
 
 def _resolved_images(dataset: DetectionDataset) -> dict[Path, str]:
-    return {
-        (part.dataset_dir / record.image).resolve(): part.source
+    images = [
+        (part.dataset_dir / record.image, part.source)
         for part in dataset.parts
         for record in part.records
+    ]
+    return {
+        path.resolve(): source
+        for path, source in track(
+            images, f"Resolving {dataset.stage} images", transient=True
+        )
     }
+
+
+def _pipeline(augmentation: Augmentation | None) -> AugmentationPipeline | None:
+    match augmentation:
+        case None | AugmentationPipeline():
+            return augmentation
+        case AugmentationConfig():
+            return AugmentationPipeline.from_pydantic_model(augmentation)
+        case _:
+            return AugmentationPipeline(augmentation)
+
+
+def _loader(
+    dataset: Dataset[DetectionSample],
+    batch_size: int,
+    *,
+    shuffle: bool,
+    seed: int,
+    kwargs: dict[str, Any],
+) -> DataLoader[DetectionSample]:
+    if shuffle and "generator" not in kwargs:
+        kwargs = {**kwargs, "generator": torch.Generator().manual_seed(seed)}
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=DetectionCollator(),
+        **kwargs,
+    )

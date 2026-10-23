@@ -39,7 +39,7 @@ class DetectionDatasetConfig(StrictPydanticBaseModel):
     Attributes:
         datasets (list[DatasetSpecConfig]): Datasets to combine.
         stage (Stage): ``train`` or ``val``.
-        preprocessing (PreprocessingConfig): Conversion of images into model inputs.
+        preprocessor (PreprocessingConfig): Conversion of images into model inputs.
         augmentation (AugmentationConfig | None): Augmentation applied before preprocessing.
         storage (StorageConfig): Canonical layout location and preparation settings.
         seed (int): Seed for subsampling and augmentation.
@@ -47,7 +47,7 @@ class DetectionDatasetConfig(StrictPydanticBaseModel):
 
     datasets: list[DatasetSpecConfig] = Field(min_length=1)
     stage: Stage
-    preprocessing: PreprocessingConfig
+    preprocessor: PreprocessingConfig
     augmentation: AugmentationConfig | None = None
     storage: StorageConfig = Field(default_factory=StorageConfig)
     seed: int = 0
