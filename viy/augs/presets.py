@@ -152,20 +152,20 @@ def preset_operations(preset: NTIREPreset) -> list[str]:
 
 def ntire_preset(
     preset: NTIREPreset,
-    distort_probability: float | None = None,
+    p: float | None = None,
     exclude_ops: Sequence[str] = (),
 ) -> SequenceStepConfig:
     """
     Expand a preset into an explicit step configuration.
 
-    With probability ``distort_probability`` an image goes through a chain of
+    With probability ``p`` an image goes through a chain of
     one to three operations from distinct groups in random order, then an
     optional watermark, then an optional downscale. Groups left empty by the
     exclusions are dropped.
 
     Args:
         preset (NTIREPreset): Preset name.
-        distort_probability (float | None): Share of distorted images; ``None`` keeps the preset value.
+        p (float | None): Share of distorted images; ``None`` keeps the preset value.
         exclude_ops (Sequence[str]): Operations to remove from the preset.
 
     Returns:
@@ -201,7 +201,5 @@ def ntire_preset(
         )
     if "downscale" not in excluded:
         steps.append(OpStepConfig(op="downscale", p=DOWNSCALE_PROBABILITY))
-    probability = (
-        spec.distort_probability if distort_probability is None else distort_probability
-    )
+    probability = spec.distort_probability if p is None else p
     return SequenceStepConfig(steps=list(steps), p=probability)

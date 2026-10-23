@@ -2,7 +2,6 @@ from abc import ABC
 from abc import abstractmethod
 from collections.abc import Mapping
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 from typing import override
 
@@ -15,6 +14,12 @@ from viy.common import ScaleValue
 from .base import OPS
 from .base import AppliedOp
 from .base import ImageOp
+from .configs import AlbumentationsStepConfig
+from .configs import ChainGroupConfig
+from .configs import ChainStepConfig
+from .configs import OpStepConfig
+from .configs import SequenceStepConfig
+from .configs import StepConfig
 
 
 type StepOutput = tuple[ImageArray, list[AppliedOp]]
@@ -43,6 +48,17 @@ class Step(ABC):
             StepOutput: Augmented image and the applied operations in order.
         """
         raise NotImplementedError
+
+    def to_config(self) -> StepConfig:
+        """
+        Configuration that builds an equivalent step.
+
+        Raises:
+            TypeError: If the step has no configuration form, e.g. a custom subclass.
+        """
+        raise TypeError(
+            f"{type(self).__name__} has no config form; compose the pipeline from the steps of viy.augs."
+        )
 
 
 class OpStep(Step):
@@ -81,20 +97,30 @@ class OpStep(Step):
         image, applied = self.op(image, rng)
         return image, [applied]
 
+    @override
+    def to_config(self) -> StepConfig:
+        return OpStepConfig(op=self.op.name, p=self.p, levels=list(self.op.levels))
+
 
 class SequenceStep(Step):
     """Apply nested steps in order, all of them with probability ``p`` or none."""
 
-    def __init__(self, steps: Sequence[Step], p: float = 1.0) -> None:
+    def __init__(
+        self, steps: Sequence[Step | AlbumentationsTransform], p: float = 1.0
+    ) -> None:
         """
         Initialize the step.
 
         Args:
-            steps (Sequence[Step]): Steps to apply in order.
+            steps (Sequence[Step | AlbumentationsTransform]): Steps to apply in
+                order; albumentations transforms are wrapped automatically.
             p (float): Probability of applying the whole sequence.
         """
         _check_probability(p)
-        self.steps = list(steps)
+        self.steps = [
+            step if isinstance(step, Step) else AlbumentationsStep(step)
+            for step in steps
+        ]
         self.p = p
         return
 
@@ -108,19 +134,30 @@ class SequenceStep(Step):
             trace.extend(applied)
         return image, trace
 
+    @override
+    def to_config(self) -> StepConfig:
+        return SequenceStepConfig(
+            steps=[step.to_config() for step in self.steps], p=self.p
+        )
 
-@dataclass(frozen=True, slots=True)
+
 class ChainGroup:
-    """
-    Mutually exclusive operations of a chain, such as all compression codecs.
+    """Mutually exclusive operations of a chain, such as all compression codecs."""
 
-    Attributes:
-        ops (tuple[ImageOp, ...]): Operations of the group, drawn uniformly.
-        weight (float): Relative probability of drawing the group.
-    """
+    def __init__(self, ops: Sequence[ImageOp | str], weight: float = 1.0) -> None:
+        """
+        Initialize the group.
 
-    ops: tuple[ImageOp, ...]
-    weight: float = 1.0
+        Args:
+            ops (Sequence[ImageOp | str]): Operations of the group, drawn uniformly,
+                or registered names of operations with their default levels.
+            weight (float): Relative probability of drawing the group.
+        """
+        self.ops: tuple[ImageOp, ...] = tuple(
+            OPS.get(op)() if isinstance(op, str) else op for op in ops
+        )
+        self.weight = weight
+        return
 
 
 class ChainStep(Step):
@@ -149,6 +186,7 @@ class ChainStep(Step):
                 f"Chain lengths must be in [1, {len(groups)}], got {sorted(lengths)}."
             )
         self.groups = list(groups)
+        self.lengths = dict(lengths)
         self._lengths = np.array(sorted(lengths), dtype=np.int64)
         self._length_p = _normalize([lengths[int(length)] for length in self._lengths])
         self._group_p = _normalize([group.weight for group in self.groups])
@@ -167,6 +205,19 @@ class ChainStep(Step):
             image, applied = op(image, rng)
             trace.append(applied)
         return image, trace
+
+    @override
+    def to_config(self) -> StepConfig:
+        return ChainStepConfig(
+            groups=[
+                ChainGroupConfig(ops=[op.name for op in group.ops], weight=group.weight)
+                for group in self.groups
+            ],
+            lengths=self.lengths,
+            levels={
+                op.name: list(op.levels) for group in self.groups for op in group.ops
+            },
+        )
 
 
 class AlbumentationsStep(Step):
@@ -198,10 +249,13 @@ class AlbumentationsStep(Step):
             p (float): Probability of applying the step.
         """
         _check_probability(p)
+        self._by_name: tuple[str, dict[str, Any]] | None = None
         if isinstance(transform, str):
+            self._by_name = (transform, dict(params or {}))
             transform = _transform_by_name(transform, dict(params or {}))
         elif params:
             raise ValueError("Pass params only together with a transform name.")
+        self.transform = transform
         self.name = f"albumentations.{type(transform).__name__}"
         self.p = p
         self._compose = A.Compose([transform], save_applied_params=True)
@@ -221,6 +275,14 @@ class AlbumentationsStep(Step):
             for name, _ in output["applied_transforms"]
         ]
         return np.ascontiguousarray(augmented), trace
+
+    @override
+    def to_config(self) -> StepConfig:
+        if self._by_name is not None:
+            name, params = self._by_name
+            return AlbumentationsStepConfig(transform=name, params=params, p=self.p)
+        serialized = A.to_dict(self.transform)["transform"]
+        return AlbumentationsStepConfig(serialized=serialized, p=self.p)
 
 
 def _transform_by_name(name: str, params: dict[str, Any]) -> A.BasicTransform:

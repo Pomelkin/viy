@@ -1,8 +1,12 @@
+from viy.common import ImageArray
+from viy.common import ScaleValue
+
 from . import ops
 from .base import OPS
 from .base import AppliedOp
 from .base import ImageOp
 from .base import RangeImageOp
+from .base import trace_from_json
 from .base import trace_to_json
 from .configs import AlbumentationsStepConfig
 from .configs import AugmentationConfig
@@ -17,6 +21,7 @@ from .pipeline import AugmentationPipeline
 from .pipeline import NTIREPresetStep
 from .pipeline import build_op
 from .pipeline import build_step
+from .pipeline import image_rng
 from .presets import ntire_preset
 from .presets import preset_operations
 from .steps import AlbumentationsStep
@@ -40,6 +45,7 @@ __all__ = [
     "ChainGroupConfig",
     "ChainStep",
     "ChainStepConfig",
+    "ImageArray",
     "ImageOp",
     "NTIREPreset",
     "NTIREPresetStep",
@@ -47,14 +53,17 @@ __all__ = [
     "OpStep",
     "OpStepConfig",
     "RangeImageOp",
+    "ScaleValue",
     "SequenceStep",
     "SequenceStepConfig",
     "Step",
     "StepConfig",
     "build_op",
     "build_step",
+    "image_rng",
     "ntire_preset",
     "ops",
     "preset_operations",
+    "trace_from_json",
     "trace_to_json",
 ]

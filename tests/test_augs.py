@@ -12,6 +12,9 @@ from viy.augs import AugmentationConfig
 from viy.augs import AugmentationPipeline
 from viy.augs import NTIREPreset
 from viy.augs import ChainStepConfig
+from viy.augs import SequenceStep
+from viy.augs import ChainStep
+from viy.augs import ChainGroup
 from viy.augs import ImageOp
 from viy.augs import NTIREPresetStep
 from viy.augs import OpStep
@@ -73,7 +76,7 @@ def test_op_level_validation() -> None:
 @pytest.mark.parametrize("preset", list(NTIREPreset))
 def test_presets_follow_their_groups(preset: NTIREPreset) -> None:
     spec = PRESETS[preset]
-    step = build_step(ntire_preset(preset, distort_probability=1.0))
+    step = build_step(ntire_preset(preset, p=1.0))
     group_of = {
         name: index for index, group in enumerate(spec.groups) for name in group
     }
@@ -250,7 +253,7 @@ def test_python_api_steps() -> None:
             A.HorizontalFlip(p=1.0),
             A.Compose([A.OneOf([A.Blur(p=1.0), A.GaussNoise(p=1.0)], p=1.0)]),
             OpStep("jpeg", levels=[50]),
-            NTIREPresetStep("val", distort_probability=0.0),
+            NTIREPresetStep("val", p=0.0),
         ]
     )
     augmented, trace = pipeline(image, np.random.default_rng(0))
@@ -288,3 +291,65 @@ def test_preset_step_matches_config() -> None:
         OpStep(build_op("jpeg"), levels=[50])
     with pytest.raises(ValueError, match="params"):
         AlbumentationsStep(A.HorizontalFlip(), params={"p": 1.0})
+
+
+def test_pipeline_to_config_round_trip() -> None:
+    pipeline = AugmentationPipeline(
+        [
+            A.OneOf([A.Blur(), A.HorizontalFlip()], p=0.7),
+            A.Rotate(limit=10, p=1.0),
+            OpStep("jpeg", p=0.5, levels=[30, 50]),
+            ChainStep(
+                [
+                    ChainGroup(["gausblur", "lensblur"]),
+                    ChainGroup(["jpeg"], weight=2.0),
+                ],
+                {1: 1.0, 2: 1.0},
+            ),
+            SequenceStep([A.VerticalFlip(p=1.0), OpStep("brighten")], p=0.5),
+            NTIREPresetStep("val", p=0.8, exclude_ops=["jpeg"]),
+        ]
+    )
+    config = pipeline.to_config()
+    rebuilt = AugmentationPipeline.from_pydantic_model(
+        AugmentationConfig.model_validate_json(config.model_dump_json())
+    )
+    for seed in range(5):
+        first, first_trace = pipeline(_image(seed=seed), np.random.default_rng(seed))
+        second, second_trace = rebuilt(_image(seed=seed), np.random.default_rng(seed))
+        assert np.array_equal(first, second)
+        assert first_trace == second_trace
+
+
+def test_albumentations_compose_from_config() -> None:
+    config = AugmentationConfig.model_validate(
+        {
+            "steps": [
+                {
+                    "kind": "albumentations",
+                    "serialized": {
+                        "__class_fullname__": "OneOf",
+                        "p": 1.0,
+                        "transforms": [
+                            {"__class_fullname__": "HorizontalFlip", "p": 1.0},
+                            {"__class_fullname__": "VerticalFlip", "p": 1.0},
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+    _, trace = AugmentationPipeline.from_pydantic_model(config)(
+        _image(), np.random.default_rng(0)
+    )
+    assert trace[0].name in {
+        "albumentations.HorizontalFlip",
+        "albumentations.VerticalFlip",
+    }
+    with pytest.raises(ValidationError, match="either transform or serialized"):
+        AugmentationConfig.model_validate({"steps": [{"kind": "albumentations"}]})
+
+
+def test_preset_typo_lists_presets() -> None:
+    with pytest.raises(ValueError, match="Available: val, val_hard"):
+        NTIREPresetStep("strong")

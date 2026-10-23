@@ -41,6 +41,11 @@ def trace_to_json(trace: Sequence[AppliedOp]) -> str:
     return json.dumps([{"name": op.name, "scale": op.scale} for op in trace])
 
 
+def trace_from_json(text: str) -> tuple[AppliedOp, ...]:
+    """Read applied operations written by :func:`trace_to_json`."""
+    return tuple(AppliedOp(item["name"], item["scale"]) for item in json.loads(text))
+
+
 OPS: Registry[type["ImageOp"]] = Registry("image operation")
 
 

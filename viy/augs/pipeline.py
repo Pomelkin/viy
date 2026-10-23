@@ -1,7 +1,10 @@
+import hashlib
 from collections.abc import Sequence
+from typing import Any
 from typing import assert_never
 from typing import override
 
+import albumentations as A
 import numpy as np
 
 from viy.common import ImageArray
@@ -27,6 +30,24 @@ from .steps import Step
 from .steps import StepOutput
 
 
+def image_rng(seed: int, image: str) -> np.random.Generator:
+    """
+    Generator for augmenting one image, independent of its position in a split.
+
+    The same seed and image path always give the same augmentation, whatever
+    subset of the split is drawn and in whatever order.
+
+    Args:
+        seed (int): User seed.
+        image (str): Image path relative to the dataset directory.
+
+    Returns:
+        np.random.Generator: Generator seeded from ``seed`` and a stable hash of ``image``.
+    """
+    digest = hashlib.blake2b(image.encode(), digest_size=8).digest()
+    return np.random.default_rng((seed, int.from_bytes(digest)))
+
+
 def build_op(name: str, levels: Sequence[int | float | str] | None = None) -> ImageOp:
     """Instantiate the operation registered under ``name``."""
     return OPS.get(name)(levels)
@@ -48,24 +69,31 @@ def build_step(config: StepConfig) -> Step:
         case ChainStepConfig():
             groups = [
                 ChainGroup(
-                    ops=tuple(
-                        build_op(name, config.levels.get(name)) for name in group.ops
-                    ),
+                    ops=[build_op(name, config.levels.get(name)) for name in group.ops],
                     weight=group.weight,
                 )
                 for group in config.groups
             ]
             return ChainStep(groups, config.lengths)
+        case AlbumentationsStepConfig(serialized=dict() as serialized):
+            return AlbumentationsStep(_deserialize(serialized), p=config.p)
+        case AlbumentationsStepConfig(transform=str() as transform):
+            return AlbumentationsStep(transform, config.params, config.p)
         case AlbumentationsStepConfig():
-            return AlbumentationsStep(config.transform, config.params, config.p)
+            raise ValueError("An albumentations step needs transform or serialized.")
         case NTIREPresetStepConfig():
-            return NTIREPresetStep(
-                config.preset, config.distort_probability, config.exclude_ops
-            )
+            return NTIREPresetStep(config.preset, config.p, config.exclude_ops)
         case SequenceStepConfig():
             return SequenceStep([build_step(step) for step in config.steps], config.p)
         case _:
             assert_never(config)
+
+
+def _deserialize(serialized: dict[str, Any]) -> AlbumentationsTransform:
+    transform = A.from_dict({"transform": serialized})
+    if not isinstance(transform, A.BasicTransform | A.BaseCompose):
+        raise TypeError(f"Not an albumentations transform: {serialized}.")
+    return transform
 
 
 class NTIREPresetStep(Step):
@@ -74,7 +102,7 @@ class NTIREPresetStep(Step):
     def __init__(
         self,
         preset: NTIREPreset | str,
-        distort_probability: float | None = None,
+        p: float | None = None,
         exclude_ops: Sequence[str] = (),
     ) -> None:
         """
@@ -82,19 +110,30 @@ class NTIREPresetStep(Step):
 
         Args:
             preset (NTIREPreset | str): Preset name, e.g. ``aggressive``.
-            distort_probability (float | None): Share of distorted images; ``None``
+            p (float | None): Share of distorted images; ``None``
                 keeps the preset value.
             exclude_ops (Sequence[str]): Operations removed from the preset.
         """
+        names = [item.value for item in NTIREPreset]
+        if preset not in names:
+            raise ValueError(
+                f"Unknown NTIRE preset '{preset}'. Available: {', '.join(names)}."
+            )
         self.preset = NTIREPreset(preset)
-        self.sequence = build_step(
-            ntire_preset(self.preset, distort_probability, exclude_ops)
-        )
+        self.p = p
+        self.exclude_ops = list(exclude_ops)
+        self.sequence = build_step(ntire_preset(self.preset, p, exclude_ops))
         return
 
     @override
     def __call__(self, image: ImageArray, rng: np.random.Generator) -> StepOutput:
         return self.sequence(image, rng)
+
+    @override
+    def to_config(self) -> StepConfig:
+        return NTIREPresetStepConfig(
+            preset=self.preset, p=self.p, exclude_ops=self.exclude_ops
+        )
 
 
 class AugmentationPipeline:
@@ -132,6 +171,15 @@ class AugmentationPipeline:
     def from_pydantic_model(cls, config: AugmentationConfig) -> "AugmentationPipeline":
         """Build the pipeline from its configuration."""
         return cls([build_step(step) for step in config.steps])
+
+    def to_config(self) -> AugmentationConfig:
+        """
+        Configuration that builds an equivalent pipeline, e.g. for a benchmark derivation.
+
+        Albumentations transforms are stored in their serialized form, so the
+        rebuilt pipeline augments every image exactly as this one does.
+        """
+        return AugmentationConfig(steps=[step.to_config() for step in self.steps])
 
     def __call__(self, image: ImageArray, rng: np.random.Generator) -> StepOutput:
         """

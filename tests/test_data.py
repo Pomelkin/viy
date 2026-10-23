@@ -39,7 +39,7 @@ def _train(
         augmentation=AugmentationPipeline(
             [
                 A.HorizontalFlip(p=0.5),
-                NTIREPresetStep("aggressive_stage6", distort_probability=1.0),
+                NTIREPresetStep("aggressive_stage6", p=1.0),
             ]
         ),
         storage=storage,

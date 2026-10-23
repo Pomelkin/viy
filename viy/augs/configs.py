@@ -104,18 +104,34 @@ class ChainStepConfig(StrictPydanticBaseModel):
 
 class AlbumentationsStepConfig(StrictPydanticBaseModel):
     """
-    An ``albumentations`` transform.
+    An ``albumentations`` transform or compose.
+
+    Give either a transform class name with its ``params``, or a ``serialized``
+    transform in the format of ``albumentations.to_dict(...)["transform"]``,
+    which also covers composes such as ``OneOf``. Parameters left out of a
+    serialized transform take their defaults.
 
     Attributes:
-        transform (str): Transform class name, e.g. ``HorizontalFlip``.
-        params (dict[str, Any]): Keyword arguments of the transform except ``p``.
-        p (float): Probability of applying the transform.
+        transform (str | None): Transform class name, e.g. ``HorizontalFlip``.
+        params (dict[str, Any]): Keyword arguments of ``transform`` except ``p``.
+        serialized (dict[str, Any] | None): Serialized transform or compose, e.g.
+            ``{__class_fullname__: OneOf, transforms: [{__class_fullname__: Blur}]}``.
+        p (float): Probability of applying the step.
     """
 
     kind: Literal["albumentations"] = "albumentations"
-    transform: str
+    transform: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    serialized: dict[str, Any] | None = None
     p: Probability = 1.0
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> Self:
+        if (self.transform is None) == (self.serialized is None):
+            raise ValueError("Set either transform or serialized, not both.")
+        if self.serialized is not None and self.params:
+            raise ValueError("params belong to transform; put them inside serialized.")
+        return self
 
 
 class NTIREPresetStepConfig(StrictPydanticBaseModel):
@@ -124,13 +140,13 @@ class NTIREPresetStepConfig(StrictPydanticBaseModel):
 
     Attributes:
         preset (NTIREPreset): Preset name.
-        distort_probability (float | None): Share of distorted images; ``None`` keeps the preset value.
+        p (float | None): Share of distorted images; ``None`` keeps the preset value.
         exclude_ops (list[str]): Operations removed from the preset, e.g. held-out transforms.
     """
 
     kind: Literal["ntire_preset"] = "ntire_preset"
     preset: NTIREPreset
-    distort_probability: Probability | None = None
+    p: Probability | None = None
     exclude_ops: list[str] = Field(default_factory=list)
 
 
