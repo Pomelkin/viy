@@ -11,6 +11,7 @@ from kostyl.utils import setup_logger
 
 from viy.common import FAKE_LABEL
 from viy.common import REAL_LABEL
+from viy.progress import track
 
 from .records import SampleRecord
 
@@ -84,7 +85,9 @@ def _check_files_exist(
         case _:
             checked = records
     missing = [
-        record.image for record in checked if not (dataset_dir / record.image).is_file()
+        record.image
+        for record in track(checked, f"Checking files of {name}", transient=True)
+        if not (dataset_dir / record.image).is_file()
     ]
     if missing:
         raise LayoutError(

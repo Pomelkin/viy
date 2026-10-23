@@ -143,34 +143,44 @@ def read_records(path: Path) -> list[SampleRecord]:
         if missing:
             raise ValueError(f"{path}: missing required columns {sorted(missing)}.")
         extra_columns = [column for column in columns if column not in CORE_COLUMNS]
-        return [_decode_row(row, extra_columns) for row in reader]
+        return [
+            _decode_row(row, extra_columns, f"{path}, line {line}")
+            for line, row in enumerate(reader, start=2)
+        ]
 
 
 def _decode_row(
-    row: Mapping[str, str | None], extra_columns: Sequence[str]
+    row: Mapping[str, str | None], extra_columns: Sequence[str], where: str
 ) -> SampleRecord:
-    distortions = _decode_list(row.get("distortions"))
-    scales = _decode_list(row.get("distortion_scales"))
+    distortions = _decode_list(row.get("distortions"), "distortions", where)
+    scales = _decode_list(row.get("distortion_scales"), "distortion_scales", where)
     extra = {column: value for column in extra_columns if (value := row.get(column))}
+    image = _require(row, "image", where)
+    label = _require(row, "label", where)
+    if label not in {"0", "1"}:
+        raise ValueError(
+            f"{where}: the label of '{image}' must be 0 for a real image or 1 for a "
+            f"generated one, got {label!r}."
+        )
     return SampleRecord(
-        image=_require(row, "image"),
-        label=int(_require(row, "label")),
+        image=image,
+        label=int(label),
         generator=row.get("generator") or None,
         distortions=None
         if distortions is None
         else tuple(str(item) for item in distortions),
         distortion_scales=None
         if scales is None
-        else tuple(_as_scale(item) for item in scales),
+        else tuple(_as_scale(item, where) for item in scales),
         source_id=row.get("source_id") or None,
         extra=extra,
     )
 
 
-def _require(row: Mapping[str, str | None], column: str) -> str:
+def _require(row: Mapping[str, str | None], column: str, where: str) -> str:
     value = row.get(column)
     if not value:
-        raise ValueError(f"empty required column '{column}'")
+        raise ValueError(f"{where}: the required column '{column}' is empty.")
     return value
 
 
@@ -182,16 +192,20 @@ def _encode_list(values: Sequence[ScaleValue] | None) -> str:
     return "" if values is None else json.dumps(list(values))
 
 
-def _decode_list(cell: str | None) -> list[object] | None:
+def _decode_list(cell: str | None, column: str, where: str) -> list[object] | None:
     if not cell:
         return None
+    if not cell.lstrip().startswith("["):
+        raise ValueError(
+            f'{where}: {column} must be a JSON list such as ["jpeg"] or [], got {cell!r}.'
+        )
     decoded = json.loads(cell)
     if not isinstance(decoded, list):
-        raise TypeError(f"expected a JSON list, got {cell!r}")
+        raise TypeError(f"{where}: {column} must be a JSON list, got {cell!r}.")
     return decoded
 
 
-def _as_scale(value: object) -> ScaleValue:
+def _as_scale(value: object, where: str) -> ScaleValue:
     if isinstance(value, bool) or not isinstance(value, int | float | str):
-        raise TypeError(f"invalid distortion scale {value!r}")
+        raise TypeError(f"{where}: invalid distortion scale {value!r}.")
     return value

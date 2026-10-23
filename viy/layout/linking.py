@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 
+from viy.progress import track
+
 
 class LinkMode(StrEnum):
     """How images of a raw dataset are materialized in the canonical layout."""
@@ -23,6 +25,8 @@ def link_files(pairs: Sequence[tuple[Path, Path]], mode: LinkMode) -> None:
     Materialize every ``(source, target)`` pair.
 
     Already materialized targets are kept, so an interrupted run can be repeated.
+    A pair whose source is its target, an image a builder wrote in place, is
+    left as it is.
 
     Args:
         pairs (Sequence[tuple[Path, Path]]): Raw files and their canonical locations.
@@ -33,7 +37,7 @@ def link_files(pairs: Sequence[tuple[Path, Path]], mode: LinkMode) -> None:
     """
     for parent in sorted({target.parent for _, target in pairs}):
         parent.mkdir(parents=True, exist_ok=True)
-    for source, target in pairs:
+    for source, target in track(pairs, f"Materializing images ({mode})"):
         _link(source, target, mode)
     return
 
@@ -41,6 +45,8 @@ def link_files(pairs: Sequence[tuple[Path, Path]], mode: LinkMode) -> None:
 def _link(source: Path, target: Path, mode: LinkMode) -> None:
     if not source.is_file():
         raise FileNotFoundError(f"Raw file does not exist: {source}")
+    if source == target:
+        return
     if target.is_symlink() or target.exists():
         if _is_materialized(source, target, mode):
             return

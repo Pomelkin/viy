@@ -1,7 +1,10 @@
+from pathlib import Path
+from typing import Any
 from typing import Final
 
 import numpy as np
 import numpy.typing as npt
+from kostyl.utils import load_file
 
 
 type ImageArray = npt.NDArray[np.uint8]
@@ -13,3 +16,13 @@ type ScaleValue = int | float | str
 REAL_LABEL: Final = 0
 FAKE_LABEL: Final = 1
 LABELS: Final = frozenset({REAL_LABEL, FAKE_LABEL})
+
+
+def load_config(path: Path | str) -> dict[str, Any]:
+    """
+    Read a YAML or JSON config file into a dictionary.
+
+    Example:
+        >>> config = BenchmarkConfig.model_validate(load_config("bench.yaml"))
+    """
+    return load_file(path)

@@ -15,18 +15,20 @@ class Registry[T]:
         self._items: dict[str, T] = {}
         return
 
-    def add(self, name: str, item: T) -> None:
+    def add(self, name: str, item: T, replace: bool = False) -> None:
         """
         Register ``item`` under ``name``.
 
         Args:
             name (str): Unique name of the item.
             item (T): Object to register.
+            replace (bool): Replace an item registered under the same name, e.g.
+                when a notebook cell runs again.
 
         Raises:
-            ValueError: If ``name`` is already taken.
+            ValueError: If ``name`` is already taken and ``replace`` is off.
         """
-        if name in self._items:
+        if name in self._items and not replace:
             raise ValueError(f"{self.kind} '{name}' is already registered.")
         self._items[name] = item
         return

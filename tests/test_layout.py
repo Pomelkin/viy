@@ -104,3 +104,15 @@ def test_check_split(tmp_path: Path) -> None:
     with pytest.raises(LayoutError, match="missing"):
         check_split([present, missing], "ds/missing", tmp_path)
     check_split([present, missing], "ds/unchecked", tmp_path, FileCheck.NONE)
+
+
+def test_csv_errors_point_at_the_row(tmp_path: Path) -> None:
+    path = tmp_path / "bad.csv"
+    path.write_text(
+        "image,label,distortions,distortion_scales\nimages/x.jpg,1,jpeg,28\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError, match=r"bad.csv, line 2: distortions must be a JSON list"
+    ):
+        read_records(path)
