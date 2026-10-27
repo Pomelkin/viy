@@ -25,8 +25,11 @@ from torch.utils.data import Dataset
 
 from viy.augs import AugmentationConfig
 from viy.augs import AugmentationPipeline
+from viy.augs import OpStepConfig
+from viy.augs import encode_jpeg
 from viy.augs import image_rng
 from viy.augs import trace_to_json
+from viy.common import ImageArray
 from viy.datasets import DatasetBuilder
 from viy.layout import DatasetLayout
 from viy.layout import LayoutError
@@ -44,6 +47,8 @@ BASE_IMAGE_COLUMN: Final = "base_image"
 DERIVED_IMAGES_DIR: Final = "images/derived"
 FINGERPRINT_LENGTH: Final = 12
 PNG_COMPRESS_LEVEL: Final = 1
+PNG_SUFFIX: Final = ".png"
+JPEG_SUFFIX: Final = ".jpg"
 
 
 class SplitDerivation(StrictPydanticBaseModel):
@@ -117,7 +122,10 @@ def derive_split(
     A derivation with only a ``limit`` writes a CSV over the existing images.
     With an ``augmentation`` every image is augmented once with a generator
     seeded from the derivation seed and the image path, and saved as PNG under
-    ``images/derived/<name>/``. The applied operations of every image go to
+    ``images/derived/<name>/``. When the last step applies ``jpeg`` with one
+    level to every image, the image is saved as the JPEG file that step
+    encodes instead: the decoded pixels are the same and the file is several
+    times smaller. The applied operations of every image go to
     the ``augmentations`` column and its base image to the ``base_image``
     column. ``distortions`` of augmented images are unknown, because the
     augmentation history is kept apart from the history of the base image.
@@ -169,9 +177,34 @@ def library_versions() -> dict[str, str]:
     }
 
 
-def derived_image(name: str, image: str) -> str:
+def derived_image(name: str, image: str, suffix: str = PNG_SUFFIX) -> str:
     """Location of the augmented copy of ``image`` in the derived split ``name``."""
-    return str(PurePosixPath(DERIVED_IMAGES_DIR, name, image).with_suffix(".png"))
+    return str(PurePosixPath(DERIVED_IMAGES_DIR, name, image).with_suffix(suffix))
+
+
+def jpeg_storage_quality(augmentation: AugmentationConfig) -> int | None:
+    """
+    JPEG quality the derived images are stored with, if they can be stored as JPEG.
+
+    That is the case when the last step applies ``jpeg`` to every image with
+    one level: the file that step encodes holds exactly the augmented pixels.
+
+    Args:
+        augmentation (AugmentationConfig): Augmentation of a derivation.
+
+    Returns:
+        int | None: Quality of the last step; ``None`` when images are stored as PNG.
+    """
+    last = augmentation.steps[-1]
+    if (
+        isinstance(last, OpStepConfig)
+        and last.op == "jpeg"
+        and last.p == 1.0
+        and last.levels is not None
+        and len(last.levels) == 1
+    ):
+        return int(last.levels[0])
+    return None
 
 
 def _build(
@@ -190,6 +223,7 @@ def _build(
             name,
             records,
             AugmentationPipeline.from_pydantic_model(derivation.augmentation),
+            jpeg_storage_quality(derivation.augmentation),
             derivation.seed,
             num_workers,
         )
@@ -216,17 +250,21 @@ def _augment(
     name: str,
     records: Sequence[SampleRecord],
     pipeline: AugmentationPipeline,
+    jpeg_quality: int | None,
     seed: int,
     num_workers: int,
 ) -> list[SampleRecord]:
-    targets = [derived_image(name, record.image) for record in records]
+    suffix = PNG_SUFFIX if jpeg_quality is None else JPEG_SUFFIX
+    targets = [derived_image(name, record.image, suffix) for record in records]
     collisions = [path for path, count in Counter(targets).items() if count > 1]
     if collisions:
         raise LayoutError(
             f"Images of '{builder.name}' differ only in their extension and would "
-            f"overwrite each other as PNG, e.g. {collisions[:3]}."
+            f"overwrite each other as '{suffix}' files, e.g. {collisions[:3]}."
         )
-    images = _AugmentedImages(builder.layout.dir, records, targets, pipeline, seed)
+    images = _AugmentedImages(
+        builder.layout.dir, records, targets, pipeline, jpeg_quality, seed
+    )
     loader = DataLoader(images, batch_size=None, num_workers=num_workers)
     traces = [""] * len(records)
     batches = iter(loader)
@@ -257,12 +295,14 @@ class _AugmentedImages(Dataset[tuple[int, str]]):
         records: Sequence[SampleRecord],
         targets: Sequence[str],
         pipeline: AugmentationPipeline,
+        jpeg_quality: int | None,
         seed: int,
     ) -> None:
         self.dataset_dir = dataset_dir
         self.records = list(records)
         self.targets = list(targets)
         self.pipeline = pipeline
+        self.jpeg_quality = jpeg_quality
         self.seed = seed
         return
 
@@ -272,18 +312,39 @@ class _AugmentedImages(Dataset[tuple[int, str]]):
     @override
     def __getitem__(self, index: int) -> tuple[int, str]:
         record = self.records[index]
-        image, trace = self.pipeline(
-            decode_image(self.dataset_dir / record.image),
-            image_rng(self.seed, record.image),
-        )
+        original = decode_image(self.dataset_dir / record.image)
+        image, trace = self.pipeline(original, image_rng(self.seed, record.image))
         target = self.dataset_dir / self.targets[index]
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f"{target.name}.tmp")
-        Image.fromarray(image).save(
-            temporary, format="PNG", compress_level=PNG_COMPRESS_LEVEL
-        )
+        quality = self.jpeg_quality
+        if quality is None:
+            Image.fromarray(image).save(
+                temporary, format="PNG", compress_level=PNG_COMPRESS_LEVEL
+            )
+        else:
+            self._write_jpeg(temporary, original, image, record.image, quality)
         temporary.replace(target)
         return index, trace_to_json(trace)
+
+    def _write_jpeg(
+        self,
+        path: Path,
+        original: ImageArray,
+        augmented: ImageArray,
+        image: str,
+        quality: int,
+    ) -> None:
+        """Write the JPEG the last step encodes and check that it decodes to ``augmented``."""
+        before_jpeg = AugmentationPipeline(self.pipeline.steps[:-1])
+        encoded, _ = before_jpeg(original, image_rng(self.seed, image))
+        path.write_bytes(encode_jpeg(encoded, quality))
+        if not np.array_equal(decode_image(path), augmented):
+            raise LayoutError(
+                f"The JPEG file of '{image}' does not decode to its augmented pixels; "
+                "the jpeg operation and the stored file are encoded differently."
+            )
+        return
 
 
 def _warn_on_version_change(layout: DatasetLayout, name: str) -> None:

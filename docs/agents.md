@@ -60,7 +60,7 @@ raw files --DatasetBuilder.collect--> RawSample(source, record)
           --DetectionDataset--> concatenation of the SplitDatasets of one stage
 ```
 
-The benchmark takes the same path up to `load`. A task with a `derivation` first builds its split with `derive_split`: subsample with the seed, augment every image with `image_rng(seed, record.image)`, save PNGs, write the provenance JSON and then the CSV. After that, `model.preprocess` runs in workers, `model.predict` scores the batches, and `DetectionTask.evaluate` turns slices and metrics into a `TaskResult`.
+The benchmark takes the same path up to `load`. A task with a `derivation` first builds its split with `derive_split`: subsample with the seed, augment every image with `image_rng(seed, record.image)`, save PNGs, or the JPEG files of a last single-level `jpeg` step applied to every image, write the provenance JSON and then the CSV. After that, `model.preprocess` runs in workers, `model.predict` scores the batches, and `DetectionTask.evaluate` turns slices and metrics into a `TaskResult`.
 
 ## Invariants
 
@@ -71,7 +71,7 @@ Keep these true; the tests rely on them.
 - **Preparation runs under the dataset `DirLock`** and re-checks for the split after taking the lock.
 - **Augmentation randomness comes only from the `numpy.random.Generator` argument.** No `random`, no `np.random.*` module functions, no torch RNG inside operations. The same seed must give the same image and the same trace.
 - **Every generator derives from a user seed.** Users set `seed` of a dataset or derivation; the torch seed matters only for DataLoaders built by hand, since `DetectionDataset.dataloader` seeds its own generator. Per-image generators come from `image_rng(seed, record.image)`, never from row indices, so subsets and order do not change an image's augmentation. Training workers mix in the distributed rank.
-- **A derived split is named by its fingerprint**, `<split>-<sha256 of split and derivation>`. Its images live under `images/derived/<name>/`, its provenance with the seed and library versions in `splits/<name>.json`, and its CSV is written last. `distortions` of augmented images are `None`; the trace goes to the `augmentations` column.
+- **A derived split is named by its fingerprint**, `<split>-<sha256 of split and derivation>`. Its images live under `images/derived/<name>/` as PNG; when the last step applies `jpeg` to every image at one level, they are the JPEG files that step encodes, checked to decode to the augmented pixels. Its provenance, with the seed and library versions, is stored in `splits/<name>.json`, and its CSV is written last. `distortions` of augmented images are `None`; the trace goes to the `augmentations` column.
 - **A stored benchmark result is reused only for the same evaluated split.** The runner compares `split` and `derived_split` and raises on a mismatch.
 - **Operations do not modify their input**, and they return `uint8` RGB arrays. The size may change.
 - **Operation names and levels follow the NTIRE metadata vocabulary** (`distortions`, `distortion_scales`), so traces and benchmark slices match.

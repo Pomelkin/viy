@@ -17,6 +17,7 @@ from .configs import NTIREPresetStepConfig
 from .configs import OpStepConfig
 from .configs import SequenceStepConfig
 from .configs import StepConfig
+from .ops._utils import encode_jpeg
 from .pipeline import AugmentationPipeline
 from .pipeline import NTIREPresetStep
 from .pipeline import build_op
@@ -60,6 +61,7 @@ __all__ = [
     "StepConfig",
     "build_op",
     "build_step",
+    "encode_jpeg",
     "image_rng",
     "ntire_preset",
     "ops",

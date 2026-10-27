@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 from pydantic import ValidationError
 
 from viy.augs import AugmentationConfig
@@ -169,3 +170,57 @@ def test_val_dataset_matches_derived_split(
     assert [by_image[record.extra[BASE_IMAGE_COLUMN]] for record in derived] == [
         trace_from_json(record.extra[AUGMENTATIONS_COLUMN]) for record in derived
     ]
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [{"kind": "op", "op": "jpeg", "levels": [70]}],
+        [
+            {"kind": "op", "op": "brighten", "p": 0.5},
+            {"kind": "op", "op": "jpeg", "levels": [80]},
+        ],
+    ],
+)
+def test_single_level_jpeg_is_stored_as_jpeg(
+    mllm_raw: Path, storage: StorageConfig, steps: list[dict[str, object]]
+) -> None:
+    builder = MLLMGenerated(raw_path=mllm_raw, storage=storage)
+    augmentation = AugmentationConfig.model_validate({"steps": steps})
+    derivation = SplitDerivation(seed=5, limit=8, augmentation=augmentation)
+    records = builder.load(derive_split(builder, "train", derivation))
+    base = subsample(builder.load("train"), derivation.limit, derivation.seed)
+
+    pipeline = AugmentationPipeline.from_pydantic_model(augmentation)
+    for record, original in zip(records, base, strict=True):
+        path = builder.layout.image_path(record)
+        assert record.image.endswith(".jpg")
+        with Image.open(path) as stored:
+            assert stored.format == "JPEG"
+        expected, trace = pipeline(
+            decode_image(builder.layout.dir / original.image),
+            image_rng(derivation.seed, original.image),
+        )
+        assert np.array_equal(decode_image(path), expected)
+        assert trace_from_json(record.extra[AUGMENTATIONS_COLUMN]) == tuple(trace)
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"kind": "op", "op": "jpeg", "levels": [70, 80]},
+        {"kind": "op", "op": "jpeg", "p": 0.5, "levels": [70]},
+        {"kind": "op", "op": "jpeg"},
+    ],
+)
+def test_random_jpeg_is_stored_as_png(
+    mllm_raw: Path, storage: StorageConfig, step: dict[str, object]
+) -> None:
+    builder = MLLMGenerated(raw_path=mllm_raw, storage=storage)
+    derivation = SplitDerivation(
+        seed=5,
+        limit=4,
+        augmentation=AugmentationConfig.model_validate({"steps": [step]}),
+    )
+    records = builder.load(derive_split(builder, "train", derivation))
+    assert all(record.image.endswith(".png") for record in records)

@@ -30,18 +30,32 @@ def luminance(image: FloatImage) -> FloatImage:
     return (image @ LUMA_WEIGHTS)[..., None]
 
 
-def encode_decode(image: ImageArray, format_name: str, **params: Any) -> ImageArray:
-    """Round-trip ``image`` through an in-memory codec supported by Pillow."""
+def encode(image: ImageArray, format_name: str, **params: Any) -> bytes:
+    """Encode ``image`` in memory with a codec supported by Pillow."""
     buffer = io.BytesIO()
     Image.fromarray(image).save(buffer, format=format_name, **params)
-    buffer.seek(0)
-    with Image.open(buffer) as decoded:
+    return buffer.getvalue()
+
+
+def decode(data: bytes) -> ImageArray:
+    """Decode an encoded image as an RGB ``uint8`` array."""
+    with Image.open(io.BytesIO(data)) as decoded:
         return np.asarray(decoded.convert("RGB"), dtype=np.uint8).copy()
+
+
+def encode_decode(image: ImageArray, format_name: str, **params: Any) -> ImageArray:
+    """Round-trip ``image`` through an in-memory codec supported by Pillow."""
+    return decode(encode(image, format_name, **params))
+
+
+def encode_jpeg(image: ImageArray, quality: int) -> bytes:
+    """JPEG file of ``image``, exactly as the ``jpeg`` operation encodes it."""
+    return encode(image, "JPEG", quality=quality)
 
 
 def jpeg(image: ImageArray, quality: int) -> ImageArray:
     """JPEG round trip."""
-    return encode_decode(image, "JPEG", quality=quality)
+    return decode(encode_jpeg(image, quality))
 
 
 def webp(image: ImageArray, quality: int) -> ImageArray:

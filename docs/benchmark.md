@@ -203,7 +203,7 @@ The derivation stores the augmentation as a config, because it is hashed and sav
 
 On the first run of the task:
 1. the base split is prepared and `limit` images are drawn with `seed`;
-2. every image is augmented with a generator seeded from `seed` and the image path, and saved as PNG;
+2. every image is augmented with a generator seeded from `seed` and the image path, and saved as PNG, or as JPEG in the case below;
 3. the split is written to `splits/<split>-<fingerprint>.csv`, next to a JSON file with the derivation, the seed and the library versions.
 
 ```
@@ -212,6 +212,22 @@ On the first run of the task:
     splits/train-3f9a1c2b7d10.csv
     splits/train-3f9a1c2b7d10.json
 ```
+
+A PNG of a large photo takes several megabytes. When the last step applies `jpeg` to every image at one level, the images are stored as the JPEG files that step encodes, with the suffix `.jpg`. The decoded pixels are the same as with PNG, and the files are several times smaller. Use this for a fixed compression level over a whole test set:
+
+```yaml
+custom_tasks:
+  - name: openfake_v2/test_jpeg70
+    dataset: openfake_v2
+    split: test
+    derivation:
+      seed: 0
+      augmentation:
+        steps:
+          - {kind: op, op: jpeg, p: 1.0, levels: [70]}
+```
+
+A random level, several levels or `p` below 1 keep PNG storage.
 
 The fingerprint covers the base split and every setting of the derivation. Changing any of them builds a new split and keeps the old one. Later runs and other models reuse the stored split.
 
